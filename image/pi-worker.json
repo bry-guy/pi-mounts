@@ -1,0 +1,47 @@
+{
+  "imageName": "pi-worker",
+  "arch": "aarch64",
+  "distro": "alpine",
+  "alpine": {
+    "version": "3.23.7",
+    "kernelPackage": "linux-virt",
+    "kernelImage": "vmlinuz-virt",
+    "rootfsPackages": [
+      "linux-virt",
+      "rng-tools",
+      "bash",
+      "ca-certificates",
+      "ca-certificates-bundle",
+      "curl",
+      "e2fsprogs",
+      "e2fsprogs-extra",
+      "nodejs",
+      "npm",
+      "python3",
+      "openssh-client",
+      "git",
+      "ripgrep",
+      "fd",
+      "coreutils",
+      "findutils",
+      "grep",
+      "sed",
+      "file",
+      "tar",
+      "xz",
+      "gzip",
+      "zstd",
+      "diffutils",
+      "patch",
+      "jq",
+      "make",
+      "github-cli",
+      "util-linux-misc"
+    ],
+    "initramfsPackages": [],
+    "krunfwVersion": "v5.2.1"
+  },
+  "rootfs": {
+    "label": "gondolin-root"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@bry-guy/pi-mounts",
+  "version": "0.1.0",
+  "description": "Run pi's built-in tools in a Gondolin VM per project and role: read-only repos, writable worktrees, hidden secrets, role egress and secret placeholders.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "pi-extension", "gondolin", "sandbox"],
+  "repository": { "type": "git", "url": "git+https://github.com/bry-guy/pi-mounts.git" },
+  "files": ["src", "image", "scripts", "README.md"],
+  "pi": { "extensions": ["./src/extension.ts"] },
+  "dependencies": { "@earendil-works/gondolin": "^0.14.0" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "scripts": { "test": "node --test test/*.test.ts", "spike": "node scripts/spike-sandbox.mjs" }
+}
