@@ -13,7 +13,7 @@ test("hidden names", () => {
 });
 
 const cfg = v.loadConfig();
-const hasImage = existsSync(join(cfg.image || join(v.CACHE, "pi-worker"), "manifest.json"));
+const hasImage = existsSync(join(cfg.image || join(v.CACHE, "pi-local-sandbox"), "manifest.json"));
 
 test("VM: repos read-only, .git and worktrees writable, hidden files gone, unlisted egress blocked", { skip: !hasImage && "no image" }, async () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "pimounts-")));
