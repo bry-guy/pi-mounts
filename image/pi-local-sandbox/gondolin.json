@@ -1,0 +1,13 @@
+{
+  "imageName": "pi-local-sandbox",
+  "arch": "aarch64",
+  "distro": "alpine",
+  "oci": {
+    "image": "ghcr.io/bry-guy/pi-local-sandbox:latest",
+    "pullPolicy": "never",
+    "runtime": "docker"
+  },
+  "rootfs": {
+    "label": "gondolin-root"
+  }
+}

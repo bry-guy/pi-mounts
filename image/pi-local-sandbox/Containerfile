@@ -1,0 +1,12 @@
+# pi-local-sandbox: the Gondolin VM's root filesystem on the Mac (tools only; pi runs on the host).
+FROM registry.fedoraproject.org/fedora-minimal:45
+ARG MISE_VERSION=v2026.10.25
+RUN dnf5 -y install --setopt=install_weak_deps=False \
+      bash ca-certificates coreutils curl diffutils e2fsprogs fd-find file findutils gh git gzip grep jq make \
+      openssh-clients patch python3 ripgrep sed tar util-linux-core xz zstd \
+ && dnf5 clean all \
+ && arch=$([ "$(uname -m)" = x86_64 ] && echo x64 || echo arm64) \
+ && curl -fsSL "https://github.com/jdx/mise/releases/download/$MISE_VERSION/mise-$MISE_VERSION-linux-$arch" -o /usr/local/bin/mise \
+ && chmod +x /usr/local/bin/mise \
+ # Fedora ships read-only dirs (/usr/bin 555, ...); Gondolin's unprivileged rootfs export needs them writable.
+ && find / -xdev -type d ! -perm -u+w ! -path /proc ! -path /sys -exec chmod u+w {} +
