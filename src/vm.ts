@@ -22,6 +22,10 @@ export interface Policy {
 	egress: string[];
 	/** Secret name -> { hosts, value } */
 	secrets: Record<string, { hosts: string[]; value: string }>;
+	/** Re-reads secret values (short-lived tokens); called every 30 min while the VM runs. */
+	refresh?: () => Record<string, string>;
+	/** Commit identity inside the VM (the role's GitHub App bot). */
+	git?: { name: string; email: string };
 }
 
 export const CACHE = join(homedir(), ".cache", "pi-mounts");
@@ -97,8 +101,11 @@ export function mounts(G: any, p: Policy): Record<string, unknown> {
 export function guestEnv(p: Policy, placeholders: Record<string, string>): Record<string, string> {
 	const git: [string, string][] = [["safe.directory", "*"]];
 	if (placeholders.GH_TOKEN) {
+		// Remotes cloned over SSH push over HTTPS with the token (no SSH keys in the VM).
+		git.push(["url.https://github.com/.insteadOf", "ssh://git@github.com/"], ["url.https://github.com/.pushInsteadOf", "git@github.com:"]);
 		git.push(["credential.https://github.com.helper", '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f']);
 	}
+	if (p.git) git.push(["user.name", p.git.name], ["user.email", p.git.email]);
 	const env: Record<string, string> = {
 		...placeholders,
 		HOME: "/root",
@@ -121,11 +128,11 @@ export async function createVm(cfg: Config, p: Policy): Promise<any> {
 	const G = await loadGondolin(cfg);
 	const image = cfg.image || join(CACHE, "pi-worker");
 	if (!existsSync(join(image, "manifest.json"))) throw new Error(`No sandbox image at ${image}. Run scripts/setup.sh in pi-mounts.`);
-	const { httpHooks, env } = G.createHttpHooks({
+	const { httpHooks, env, secretManager } = G.createHttpHooks({
 		allowedHosts: [...new Set([...DEFAULT_EGRESS, ...p.egress])],
 		secrets: p.secrets,
 	});
-	return G.VM.create({
+	const vm = await G.VM.create({
 		sandbox: { imagePath: image },
 		memory: cfg.memory ?? "4G",
 		cpus: cfg.cpus ?? 4,
@@ -133,6 +140,17 @@ export async function createVm(cfg: Config, p: Policy): Promise<any> {
 		httpHooks,
 		env: guestEnv(p, env),
 	});
+	if (p.refresh && Object.keys(p.secrets).length) {
+		const timer = setInterval(() => {
+			try {
+				for (const [name, value] of Object.entries(p.refresh!())) secretManager.updateSecret(name, { value });
+			} catch {} // keep the old value; the next tick retries
+		}, 30 * 60_000);
+		timer.unref();
+		const close = vm.close.bind(vm);
+		vm.close = () => (clearInterval(timer), close());
+	}
+	return vm;
 }
 
 interface Entry {

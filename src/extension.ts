@@ -196,12 +196,15 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		let secrets: Policy["secrets"] = {};
+		let refresh: Policy["refresh"];
 		const wanted = Object.entries(role?.role?.secrets ?? {}) as [string, { hosts: string[] }][];
 		if (wanted.length) {
 			try {
 				const broker = (globalThis as any)[Symbol.for("pi-secret-broker.v1")];
 				if (!broker) throw new Error("pi-secret-broker is not installed");
-				const values = broker.resolveSecrets(api.trustedGrants().grants.sources[role.roleId], wanted.map(([n]) => n));
+				const sources = api.trustedGrants().grants.sources[role.roleId];
+				refresh = () => broker.resolveSecrets(sources, wanted.map(([n]) => n));
+				const values = refresh();
 				secrets = Object.fromEntries(wanted.map(([n, s]) => [n, { hosts: s.hosts, value: values[n] }]));
 			} catch (e) {
 				ctx.ui.notify(`pi-mounts: role secrets unavailable (${(e as Error).message}); continuing without them`, "warning");
@@ -211,6 +214,8 @@ export default function (pi: ExtensionAPI) {
 			projectPath: project.path,
 			aliases: ctx.cwd.startsWith(project.path) ? [] : [ctx.cwd.split("/").slice(0, project.path.split("/").length).join("/")],
 			roleId: role?.roleId,
+			refresh,
+			git: role?.role?.git,
 			egress: role?.role?.egress ?? [],
 			secrets,
 		};
