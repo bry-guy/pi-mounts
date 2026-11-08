@@ -78,6 +78,8 @@ try {
   check("(f) unlisted host blocked", r.out.startsWith("403"), r.out.replace(/\n/g, " ").slice(0, 140));
   r = await run("curl -sS -o /dev/null -w '%{http_code}' https://registry.npmjs.org/");
   check("(f) listed host allowed", r.out.trim() === "200", r.out.trim());
+  r = await run("git ls-remote https://github.com/bry-guy/pi-mounts.git HEAD 2>&1");
+  check("(f) git trusts the proxy CA", r.code === 0, r.out.trim().slice(0, 80));
 
   r = await run('echo "$GH_TOKEN"');
   check("(g) guest sees placeholder only", !!token && !r.out.includes(token), r.out.trim());

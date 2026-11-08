@@ -1,6 +1,7 @@
 # pi-local-sandbox: the Gondolin VM's root filesystem on the Mac (tools only; pi runs on the host).
 FROM registry.fedoraproject.org/fedora-minimal:45
 ARG MISE_VERSION=v2026.10.25
+COPY update-ca-certificates /usr/sbin/update-ca-certificates
 RUN dnf5 -y install --setopt=install_weak_deps=False \
       bash ca-certificates coreutils curl diffutils e2fsprogs fd-find file findutils gh git gzip grep jq make \
       openssh-clients patch python3 ripgrep sed tar util-linux-core xz zstd \
