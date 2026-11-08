@@ -80,6 +80,8 @@ try {
   check("(f) listed host allowed", r.out.trim() === "200", r.out.trim());
   r = await run("git ls-remote https://github.com/bry-guy/pi-mounts.git HEAD 2>&1");
   check("(f) git trusts the proxy CA", r.code === 0, r.out.trim().slice(0, 80));
+  r = await run("curl -sS -o /dev/null -o /dev/null -w '%{http_code} ' https://github.com https://github.com 2>&1");
+  check("(f) TLS session resumption (2nd connection)", r.out.trim() === "200 200", r.out.trim());
 
   r = await run('echo "$GH_TOKEN"');
   check("(g) guest sees placeholder only", !!token && !r.out.includes(token), r.out.trim());

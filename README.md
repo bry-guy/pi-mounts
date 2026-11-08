@@ -45,10 +45,13 @@ Optional `~/.pi/agent/pi-mounts.json`:
 { "gondolin": "/path/to/gondolin/host/dist/src/index.js", "image": "~/.cache/pi-mounts/pi-local-sandbox", "memory": "4G", "cpus": 4 }
 ```
 
-`gondolin` points at a local build while a fix is upstream: on Node 22 hosts, Gondolin 0.14's undici 6 `fetch` passes
-zstd bodies through undecoded, so some downloads arrive corrupted (fix: branch `fix/undici-7` of
-[bry-guy/gondolin](https://github.com/bry-guy/gondolin), PR to upstream pending). Set `GONDOLIN_CLI` for `setup.sh` to
-the same build.
+`gondolin` points at a local build (branch `local` in `~/dev/gondolin`) while two fixes are upstream:
+- `fix/undici-7`: on Node 22 hosts, undici 6's `fetch` passes zstd bodies through undecoded, so some downloads arrive
+  corrupted ([bry-guy/gondolin](https://github.com/bry-guy/gondolin), PR pending);
+- `fix/tls-resumption`: on Node 26 hosts, a guest's second HTTPS connection (TLS session resumption, as git and curl
+  do) fails with `tlsv1 alert decrypt error`; picking the certificate from the parsed SNI fixes it.
+
+Set `GONDOLIN_CLI` for `setup.sh` to the same build.
 
 The image is `pi-local-sandbox` (`image/pi-local-sandbox/Containerfile`): Fedora minimal with bash, git, gh, ripgrep,
 fd, curl, jq, make, python and mise. It holds tools only; pi runs on the host, and node comes from mise per repo.
