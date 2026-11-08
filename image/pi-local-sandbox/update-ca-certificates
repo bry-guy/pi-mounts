@@ -1,0 +1,5 @@
+#!/bin/sh
+# Debian-style entry point that Gondolin's init calls to trust its MITM CA; Fedora's tools read the
+# update-ca-trust bundle, so copy the CA there and expose the Debian path too.
+cp /usr/local/share/ca-certificates/*.crt /etc/pki/ca-trust/source/anchors/ 2>/dev/null
+update-ca-trust extract && ln -sf /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
