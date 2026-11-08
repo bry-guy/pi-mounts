@@ -35,3 +35,21 @@ test("VM: repos read-only, .git and worktrees writable, hidden files gone, unlis
 		await vm.close();
 	}
 });
+
+test("tracked files with hidden names stay visible; untracked ones are hidden", async () => {
+	const v = await import("../src/vm.ts");
+	const d = mkdtempSync(join(tmpdir(), "pm-"));
+	execFileSync("git", ["init", "-q", d]);
+	mkdirSync(join(d, ".pi", "roles"), { recursive: true });
+	writeFileSync(join(d, ".pi", "roles", "r.json"), "{}");
+	writeFileSync(join(d, ".envrc"), "x");
+	writeFileSync(join(d, ".env"), "SECRET=1");
+	writeFileSync(join(d, ".pi", "secret-broker.json"), "{}");
+	execFileSync("git", ["-C", d, "add", ".pi/roles/r.json", ".envrc"]);
+	assert.ok(v.isTracked(join(d, ".pi")));
+	assert.ok(v.isTracked(join(d, ".pi", "roles", "r.json")));
+	assert.ok(v.isTracked(join(d, ".envrc")));
+	assert.ok(!v.isTracked(join(d, ".env")));
+	assert.ok(!v.isTracked(join(d, ".pi", "secret-broker.json")));
+	assert.ok(!v.isTracked(join(tmpdir(), "project.json")));
+});

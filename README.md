@@ -16,7 +16,7 @@ Host paths are mounted at the same absolute paths, so tool paths don't change.
 |---|---|
 | project folder, `repos/<repo>` | read-only |
 | `repos/<repo>/.git`, `worktrees/`, `artifacts/` | read-write |
-| `project.json`, and at any depth `.pi/`, `.env*`, `.envrc`, `fnox.local.toml` | hidden; can't be created |
+| `project.json`, and at any depth `.pi/`, `.env*`, `.envrc`, `fnox.local.toml` | hidden; can't be created. Inside code checkouts, files git tracks stay visible (they're in the repo anyway; hiding them shows as deletions an agent could commit) |
 | `/root` | per-role persistent home (`~/.cache/pi-mounts/home/<role>`): mise tools, npm cache |
 | everything else on the Mac | not there |
 

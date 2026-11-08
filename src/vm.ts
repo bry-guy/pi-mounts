@@ -1,8 +1,9 @@
 // One Gondolin VM per project + role, shared by every session of this pi process (subagent children included).
 // Host paths are mounted at the same absolute paths, so pi's tools keep their paths.
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export interface Config {
 	/** Gondolin host module (dist/src/index.js); a locally patched build until upstream has the fix */
@@ -52,6 +53,26 @@ export const DEFAULT_EGRESS = [
 const HIDDEN = new Set([".pi", ".envrc", "fnox.local.toml"]);
 export const isHidden = (p: string) => p.split("/").some((n) => HIDDEN.has(n) || n.startsWith(".env")) || p === "/project.json";
 
+const trackedCache = new Map<string, { at: number; tracked: boolean }>();
+
+/** Whether git tracks this host path (or files under it). Tracked files are already in the repo, so they stay
+ *  visible: hiding them would show as deletions that an agent could commit. */
+export function isTracked(hostPath: string): boolean {
+	const hit = trackedCache.get(hostPath);
+	if (hit && Date.now() - hit.at < 10_000) return hit.tracked;
+	let tracked = false;
+	try {
+		const dir = dirname(hostPath);
+		tracked = !!execFileSync("git", ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", dir, "ls-files", "--", basename(hostPath)], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5_000,
+		}).trim();
+	} catch {} // not in a repo
+	trackedCache.set(hostPath, { at: Date.now(), tracked });
+	return tracked;
+}
+
 export function loadConfig(): Config {
 	const file = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "pi-mounts.json");
 	try {
@@ -71,13 +92,19 @@ const roleKey = (roleId?: string) => (roleId ?? "none").replace("/", "--");
 
 /** The VFS mounts: project read-only, repos' .git, worktrees/ and artifacts/ writable, hidden names shadowed. */
 export function mounts(G: any, p: Policy): Record<string, unknown> {
-	const shadow = (prov: unknown) => new G.ShadowProvider(prov, { shouldShadow: ({ path }: { path: string }) => isHidden(path), writeMode: "deny" });
-	const ro = (dir: string) => shadow(new G.ReadonlyProvider(new G.RealFSProvider(dir)));
-	const rw = (dir: string) => shadow(new G.RealFSProvider(dir));
+	// `root` is set only for code checkouts; the project folder itself sits in the pi-projects state repo, whose
+	// tracked project.json must stay hidden.
+	const shadow = (prov: unknown, root?: string) =>
+		new G.ShadowProvider(prov, {
+			shouldShadow: ({ path }: { path: string }) => isHidden(path) && !(root && isTracked(join(root, path))),
+			writeMode: "deny",
+		});
+	const ro = (dir: string, code = true) => shadow(new G.ReadonlyProvider(new G.RealFSProvider(dir)), code ? dir : undefined);
+	const rw = (dir: string, code = true) => shadow(new G.RealFSProvider(dir), code ? dir : undefined);
 	const real = realpathSync(p.projectPath);
 	const out: Record<string, unknown> = {};
 	for (const base of new Set([real, ...(p.aliases ?? [])])) {
-		out[base] = ro(real);
+		out[base] = ro(real, false);
 		const repos = join(real, "repos");
 		if (existsSync(repos)) {
 			for (const r of readdirSync(repos)) {
@@ -87,7 +114,7 @@ export function mounts(G: any, p: Policy): Record<string, unknown> {
 		}
 		for (const d of ["worktrees", "artifacts"]) {
 			mkdirSync(join(real, d), { recursive: true });
-			out[join(base, d)] = rw(join(real, d));
+			out[join(base, d)] = rw(join(real, d), d === "worktrees");
 		}
 	}
 	const home = join(CACHE, "home", roleKey(p.roleId));
