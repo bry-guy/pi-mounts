@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // M1 spike: prints PASS/FAIL per check for the Mac sandbox design. Run on the laptop.
-// Env: GONDOLIN (path to gondolin host dist index.js), IMAGE (pi-worker assets dir),
+// Env: GONDOLIN (path to gondolin host dist index.js), IMAGE (pi-local-sandbox assets dir),
 //      PUSH_REPO (owner/repo to push a throwaway branch to, optional), GH_TOKEN (optional, else `gh auth token`).
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync } from "node:fs";
@@ -8,7 +8,7 @@ import { tmpdir, homedir } from "node:os";
 import path from "node:path";
 
 const G = await import(process.env.GONDOLIN || `${homedir()}/dev/gondolin/host/dist/src/index.js`);
-const IMAGE = process.env.IMAGE || `${homedir()}/.cache/pi-mounts/pi-worker`;
+const IMAGE = process.env.IMAGE || `${homedir()}/.cache/pi-mounts/pi-local-sandbox`;
 const results = [];
 const check = (id, ok, note = "") => { results.push([id, ok]); console.log(`${ok ? "PASS" : "FAIL"}  ${id}${note ? `  ${note}` : ""}`); };
 const sh = (cmd, cwd) => { try { return execFileSync("sh", ["-c", cmd], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); } catch (e) { return `ERR ${e.stderr || e.message}`; } };
@@ -33,7 +33,6 @@ const mounts = {
   [path.join(repo, ".git")]: new G.RealFSProvider(path.join(repo, ".git")),
   [path.join(root, "worktrees")]: shadow(new G.RealFSProvider(path.join(root, "worktrees"))),
   [path.join(root, "artifacts")]: new G.RealFSProvider(path.join(root, "artifacts")),
-  "/opt/pi/bin": new G.ReadonlyProvider(new G.RealFSProvider(`${homedir()}/.cache/pi-mounts/bin`)), // mise musl release binary
 };
 const token = process.env.GH_TOKEN || (() => { try { return sh("gh auth token").trim(); } catch { return ""; } })();
 const { httpHooks, env } = G.createHttpHooks({
@@ -45,7 +44,7 @@ const { httpHooks, env } = G.createHttpHooks({
 
 let t0 = Date.now();
 const vm = await G.VM.create({ sandbox: { imagePath: IMAGE }, memory: "2G", cpus: 2, vfs: { mounts }, httpHooks,
-  env: { ...env, HOME: "/root", PATH: "/opt/pi/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", MISE_NODE_FLAVOR: "musl", MISE_NODE_COMPILE: "false", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "safe.directory", GIT_CONFIG_VALUE_0: "*" } });
+  env: { ...env, HOME: "/root", PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "safe.directory", GIT_CONFIG_VALUE_0: "*" } });
 const run = async (cmd, cwd = root) => { const r = await vm.exec(["/bin/bash", "-c", cmd], { cwd }); return { code: r.exitCode, out: (r.stdout || "") + (r.stderr || "") }; };
 try {
   let r = await run("true");
@@ -93,7 +92,7 @@ try {
 
   t0 = Date.now();
   r = await run(`cd ${root}/worktrees/r/feat && printf '[tools]\\nnode = "22"\\n' > mise.toml && mise trust -q && mise install -q 2>&1 | tail -3 && mise exec -- node --version`);
-  check("(h) mise install node 22 (musl)", r.code === 0 && /v22\./.test(r.out), `${Date.now() - t0} ms: ${r.out.trim().split("\n").pop()}`);
+  check("(h) mise install node 22", r.code === 0 && /v22\./.test(r.out), `${Date.now() - t0} ms: ${r.out.trim().split("\n").pop()}`);
 
   r = await run("curl -sS -m 10 -o /dev/null -w '%{http_code}' https://platform-control-0.tail9e13b.ts.net:6443/version 2>&1");
   check("(i) k3s API (tailnet IP) blocked from the VM, so kubectl goes through the broker", r.out.trim() === "403", r.out.trim());

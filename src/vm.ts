@@ -8,7 +8,7 @@ import { basename, dirname, join } from "node:path";
 export interface Config {
 	/** Gondolin host module (dist/src/index.js); a locally patched build until upstream has the fix */
 	gondolin?: string;
-	/** Image assets dir built from image/pi-worker.json */
+	/** Gondolin assets dir built from image/pi-local-sandbox (scripts/setup.sh) */
 	image?: string;
 	memory?: string;
 	cpus?: number;
@@ -120,8 +120,6 @@ export function mounts(G: any, p: Policy): Record<string, unknown> {
 	const home = join(CACHE, "home", roleKey(p.roleId));
 	mkdirSync(home, { recursive: true });
 	out["/root"] = new G.RealFSProvider(home); // mise tools, npm cache; only placeholders ever reach it
-	mkdirSync(join(CACHE, "bin"), { recursive: true });
-	out["/opt/pi/bin"] = new G.ReadonlyProvider(new G.RealFSProvider(join(CACHE, "bin")));
 	return out;
 }
 
@@ -136,9 +134,7 @@ export function guestEnv(p: Policy, placeholders: Record<string, string>): Recor
 	const env: Record<string, string> = {
 		...placeholders,
 		HOME: "/root",
-		PATH: "/opt/pi/bin:/root/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-		MISE_NODE_FLAVOR: "musl",
-		MISE_NODE_COMPILE: "false",
+		PATH: "/root/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
 		MISE_YES: "1",
 		GIT_TERMINAL_PROMPT: "0",
 		GIT_CONFIG_COUNT: String(git.length),
@@ -153,7 +149,7 @@ export function guestEnv(p: Policy, placeholders: Record<string, string>): Recor
 
 export async function createVm(cfg: Config, p: Policy): Promise<any> {
 	const G = await loadGondolin(cfg);
-	const image = cfg.image || join(CACHE, "pi-worker");
+	const image = cfg.image || join(CACHE, "pi-local-sandbox");
 	if (!existsSync(join(image, "manifest.json"))) throw new Error(`No sandbox image at ${image}. Run scripts/setup.sh in pi-mounts.`);
 	const { httpHooks, env, secretManager } = G.createHttpHooks({
 		allowedHosts: [...new Set([...DEFAULT_EGRESS, ...p.egress])],

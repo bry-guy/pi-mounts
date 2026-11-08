@@ -36,20 +36,24 @@ Host paths are mounted at the same absolute paths, so tool paths don't change.
 
 ```bash
 pi install git:github.com/bry-guy/pi-mounts
-~/.pi/agent/git/github.com/bry-guy/pi-mounts/scripts/setup.sh   # image + musl mise into ~/.cache/pi-mounts
+~/.pi/agent/git/github.com/bry-guy/pi-mounts/scripts/setup.sh   # builds the VM image into ~/.cache/pi-mounts (needs docker)
 ```
 
 Optional `~/.pi/agent/pi-mounts.json`:
 
 ```json
-{ "gondolin": "/path/to/gondolin/host/dist/src/index.js", "image": "~/.cache/pi-mounts/pi-worker", "memory": "4G", "cpus": 4 }
+{ "gondolin": "/path/to/gondolin/host/dist/src/index.js", "image": "~/.cache/pi-mounts/pi-local-sandbox", "memory": "4G", "cpus": 4 }
 ```
 
-`gondolin` points at a local build while a fix is upstream: Gondolin 0.14 forwards the guest's `Accept-Encoding: zstd`,
-which the host's fetch can't decode, so some downloads arrive corrupted. Set `GONDOLIN_CLI` for `setup.sh` to the same build.
+`gondolin` points at a local build while a fix is upstream: on Node 22 hosts, Gondolin 0.14's undici 6 `fetch` passes
+zstd bodies through undecoded, so some downloads arrive corrupted (fix: branch `fix/undici-7` of
+[bry-guy/gondolin](https://github.com/bry-guy/gondolin), PR to upstream pending). Set `GONDOLIN_CLI` for `setup.sh` to
+the same build.
 
-The image (`image/pi-worker.json`) is Alpine with git, gh, ripgrep, fd, node, python and build tools. mise is the
-upstream musl binary (Alpine's package compiles node from source); node installs use musl builds.
+The image is `pi-local-sandbox` (`image/pi-local-sandbox/Containerfile`): Fedora minimal with bash, git, gh, ripgrep,
+fd, curl, jq, make, python and mise. It holds tools only; pi runs on the host, and node comes from mise per repo.
+`setup.sh` builds it with docker and turns it into Gondolin assets through Gondolin's `oci` rootfs. CI publishes it
+multi-arch as `ghcr.io/bry-guy/pi-local-sandbox`, for building your own image `FROM` it.
 
 ## Checks
 
