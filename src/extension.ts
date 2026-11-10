@@ -222,6 +222,13 @@ export default function (pi: ExtensionAPI) {
 		const { vm: v, release } = acquire(cfg, policy);
 		sb = { policy, vm: v, release, allowed: new Set([...HOST_TOOLS, ...(role?.role?.tools ?? [])]) };
 		status(`sandbox: ${role?.roleId ?? "no role"}`);
+		if (!role?.roleId) {
+			ctx.ui.notify(
+				`Sandboxed with no role${role?.problem ? ` (${role.problem})` : ""}: no secrets, default hosts only. ` +
+					"Set one with /project grant <repo>/<role> --default, or leave the sandbox with /project sandbox off.",
+				"warning",
+			);
+		}
 		v.catch((e: Error) => {
 			sb.error = e.message.split("\n")[0];
 			status("sandbox: unavailable");
