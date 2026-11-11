@@ -16,7 +16,7 @@ import {
 	type ExtensionContext,
 	truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import { acquire, type Config, loadConfig, type Policy } from "./vm.ts";
+import { acquire, type Config, hostGitIdentity, loadConfig, type Policy } from "./vm.ts";
 
 const BUILTINS = ["read", "write", "edit", "bash", "ls", "find", "grep"];
 /** Host tools a sandboxed session may still use: they don't hand the agent host access or Bryan's credentials. */
@@ -216,6 +216,7 @@ export default function (pi: ExtensionAPI) {
 			roleId: role?.roleId,
 			refresh,
 			git: role?.role?.git,
+			author: role?.role?.git ? hostGitIdentity() : undefined,
 			egress: role?.role?.egress ?? [],
 			secrets,
 		};

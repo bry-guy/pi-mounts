@@ -7,6 +7,20 @@ import { test } from "node:test";
 
 const v = await import("../src/vm.ts");
 
+test("guest git: host user authors, role commits; role is both without a host identity", () => {
+	const cfg = (env: Record<string, string>) =>
+		Object.fromEntries(Array.from({ length: +env.GIT_CONFIG_COUNT }, (_, i) => [env[`GIT_CONFIG_KEY_${i}`], env[`GIT_CONFIG_VALUE_${i}`]]));
+	const bot = { name: "bot[bot]", email: "1+bot[bot]@users.noreply.github.com" };
+	const base = { projectPath: "/p", egress: [], secrets: {}, git: bot };
+	const c = cfg(v.guestEnv({ ...base, author: { name: "Human", email: "h@x" } }, {}));
+	assert.deepEqual(
+		[c["author.name"], c["author.email"], c["committer.name"], c["committer.email"], c["user.name"], c["user.email"]],
+		["Human", "h@x", bot.name, bot.email, bot.name, bot.email],
+	);
+	const f = cfg(v.guestEnv(base, {}));
+	assert.deepEqual([f["author.name"], f["author.email"], f["committer.name"]], [bot.name, bot.email, bot.name]);
+});
+
 test("hidden names", () => {
 	for (const p of ["/project.json", "/repos/a/.env", "/repos/a/.env.local", "/x/.pi/roles/r.json", "/.envrc", "/a/fnox.local.toml"]) assert.ok(v.isHidden(p), p);
 	for (const p of ["/repos/a/project.json", "/repos/a/env.ts", "/memory.md", "/a/.github/x"]) assert.ok(!v.isHidden(p), p);

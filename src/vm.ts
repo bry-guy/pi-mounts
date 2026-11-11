@@ -27,6 +27,8 @@ export interface Policy {
 	refresh?: () => Record<string, string>;
 	/** Commit identity inside the VM (the role's GitHub App bot). */
 	git?: { name: string; email: string };
+	/** The host user's git identity: commit author inside the VM (the role stays committer). */
+	author?: { name: string; email: string };
 }
 
 export const CACHE = join(homedir(), ".cache", "pi-mounts");
@@ -130,7 +132,12 @@ export function guestEnv(p: Policy, placeholders: Record<string, string>): Recor
 		git.push(["url.https://github.com/.insteadOf", "ssh://git@github.com/"], ["url.https://github.com/.pushInsteadOf", "git@github.com:"]);
 		git.push(["credential.https://github.com.helper", '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f']);
 	}
-	if (p.git) git.push(["user.name", p.git.name], ["user.email", p.git.email]);
+	if (p.git) {
+		const a = p.author ?? p.git;
+		git.push(["user.name", p.git.name], ["user.email", p.git.email]);
+		git.push(["committer.name", p.git.name], ["committer.email", p.git.email]);
+		git.push(["author.name", a.name], ["author.email", a.email]);
+	}
 	const env: Record<string, string> = {
 		...placeholders,
 		HOME: "/root",
@@ -145,6 +152,23 @@ export function guestEnv(p: Policy, placeholders: Record<string, string>): Recor
 		env[`GIT_CONFIG_VALUE_${i}`] = v;
 	});
 	return env;
+}
+
+/** The host user's git identity, or undefined if either part is unset or git fails. */
+export function hostGitIdentity(): { name: string; email: string } | undefined {
+	const get = (k: string) => {
+		try {
+			return execFileSync("git", ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "config", "--get", k], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+			}).trim();
+		} catch {
+			return "";
+		}
+	};
+	const name = get("user.name");
+	const email = get("user.email");
+	return name && email ? { name, email } : undefined;
 }
 
 export async function createVm(cfg: Config, p: Policy): Promise<any> {
