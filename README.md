@@ -25,6 +25,8 @@ Host paths are mounted at the same absolute paths, so tool paths don't change.
   through a broker action.
 - **Secrets:** each role secret appears as a placeholder (e.g. `$GH_TOKEN`), which the host swaps for the real value
   only in requests to that secret's hosts. With `GH_TOKEN`, git over HTTPS to github.com just works.
+- **Git identity:** commits are authored by the host user (their `user.name`/`user.email`) and committed by the
+  role's `git` identity; with no host identity the role is both.
 - **Host tools:** a sandboxed session may only use the VM tools plus `todo`, `ask_user_question`, `advisor`,
   subagents, `role_agent`, `broker_run`, `project_worktree`, `project_remember` and the role's `tools`.
   Other extension tools (MCP, pi-lens, pi-lsp, web search) are blocked, since they run on the host.
