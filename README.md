@@ -72,4 +72,6 @@ also tests a push with an injected token).
 - Code the agent writes in `.git` (hooks) is never run by host git in pi-projects or pi-sync, which pass
   `core.hooksPath=/dev/null` and `core.fsmonitor=false`. Other host tools that run git in a worktree may still run them.
 - Aborting a command kills its process group in the guest. A VM is shared by every session of one pi process for the
-  same project and role, and closes 30 s after the last one ends.
+  same project and role, and closes 30 s after the last one ends, or at once when pi quits; process exit kills it too.
+  A VM whose pi process was SIGKILLed or crashed is killed the next time any pi process starts a VM (runners are
+  recorded in `~/.cache/pi-mounts/vms/`). Host check: `node scripts/check-vm-lifetime.mjs`.

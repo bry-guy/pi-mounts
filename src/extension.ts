@@ -27,7 +27,7 @@ const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 interface Sandbox {
 	policy?: Policy;
 	vm?: Promise<any>;
-	release?: () => void;
+	release?: (now?: boolean) => Promise<void> | undefined;
 	/** Set when the session must be sandboxed but can't be */
 	error?: string;
 	allowed: Set<string>;
@@ -237,8 +237,10 @@ export default function (pi: ExtensionAPI) {
 		});
 	});
 
-	pi.on("session_shutdown", () => {
-		sb.release?.();
+	pi.on("session_shutdown", async (e) => {
+		const release = sb.release;
 		sb = { allowed: new Set() };
+		// On quit pi exits right after this, so the 30 s delayed close would never run.
+		await release?.(e.reason === "quit");
 	});
 }

@@ -1,7 +1,7 @@
 // One Gondolin VM per project + role, shared by every session of this pi process (subagent children included).
 // Host paths are mounted at the same absolute paths, so pi's tools keep their paths.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -171,10 +171,88 @@ export function hostGitIdentity(): { name: string; email: string } | undefined {
 	return name && email ? { name, email } : undefined;
 }
 
+/** Process table access; tests swap these out. */
+export const host = {
+	dir: join(CACHE, "vms"),
+	pid: process.pid,
+	alive(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch (e) {
+			return (e as NodeJS.ErrnoException).code === "EPERM";
+		}
+	},
+	command(pid: number): string | undefined {
+		try {
+			return execFileSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined;
+		} catch {
+			return undefined; // no such process
+		}
+	},
+	kill(pid: number) {
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {}
+	},
+};
+
+/** A VM runner (qemu) this machine started: its full command line holds a per-VM QMP socket, so it tells a reused pid apart. */
+interface VmRecord {
+	pid: number;
+	owner: number;
+	command: string;
+}
+
+function records(): VmRecord[] {
+	let files: string[];
+	try {
+		files = readdirSync(host.dir);
+	} catch {
+		return [];
+	}
+	return files.flatMap((f) => {
+		try {
+			return [JSON.parse(readFileSync(join(host.dir, f), "utf8"))];
+		} catch {
+			return [];
+		}
+	});
+}
+
+function reap(r: VmRecord) {
+	if (host.command(r.pid) === r.command) host.kill(r.pid);
+	rmSync(join(host.dir, `${r.pid}.json`), { force: true });
+}
+
+/** Kills VMs whose pi process died without closing them (SIGKILL, crash): no handler ran there. */
+export function sweep() {
+	for (const r of records()) if (!host.alive(r.owner)) reap(r);
+}
+
+/** Kills this process's VMs; runs on process exit, where the async close (and the 30 s timer) can't. */
+export function reapOwn() {
+	for (const r of records()) if (r.owner === host.pid) reap(r);
+}
+
+let exitHook = false;
+function track(vm: any): () => void {
+	const pid = vm.getHostPid?.();
+	const command = pid && host.command(pid);
+	if (!command) return () => {};
+	const r: VmRecord = { pid, owner: host.pid, command };
+	mkdirSync(host.dir, { recursive: true });
+	writeFileSync(join(host.dir, `${pid}.json`), JSON.stringify(r));
+	if (!exitHook) process.once("exit", reapOwn);
+	exitHook = true;
+	return () => reap(r);
+}
+
 export async function createVm(cfg: Config, p: Policy): Promise<any> {
 	const G = await loadGondolin(cfg);
 	const image = cfg.image || join(CACHE, "pi-local-sandbox");
 	if (!existsSync(join(image, "manifest.json"))) throw new Error(`No sandbox image at ${image}. Run scripts/setup.sh in pi-mounts.`);
+	sweep();
 	const { httpHooks, env, secretManager } = G.createHttpHooks({
 		allowedHosts: [...new Set([...DEFAULT_EGRESS, ...p.egress])],
 		secrets: p.secrets,
@@ -187,16 +265,32 @@ export async function createVm(cfg: Config, p: Policy): Promise<any> {
 		httpHooks,
 		env: guestEnv(p, env),
 	});
+	// Boot now so the runner's pid can be recorded before anything can kill this process.
+	try {
+		await vm.start();
+	} catch (e) {
+		await vm.close().catch(() => {});
+		throw e;
+	}
+	const untrack = track(vm);
+	let timer: NodeJS.Timeout | undefined;
 	if (p.refresh && Object.keys(p.secrets).length) {
-		const timer = setInterval(() => {
+		timer = setInterval(() => {
 			try {
 				for (const [name, value] of Object.entries(p.refresh!())) secretManager.updateSecret(name, { value });
 			} catch {} // keep the old value; the next tick retries
 		}, 30 * 60_000);
 		timer.unref();
-		const close = vm.close.bind(vm);
-		vm.close = () => (clearInterval(timer), close());
 	}
+	const close = vm.close.bind(vm);
+	vm.close = async () => {
+		clearInterval(timer);
+		try {
+			return await close();
+		} finally {
+			untrack(); // kills the runner if close left it running
+		}
+	};
 	return vm;
 }
 
@@ -207,8 +301,8 @@ interface Entry {
 }
 const vms = new Map<string, Entry>();
 
-/** Shared VM for a project + role; release() closes it 30 s after the last user. */
-export function acquire(cfg: Config, p: Policy): { vm: Promise<any>; release: () => void } {
+/** Shared VM for a project + role; release() closes it 30 s after the last user, release(true) at once (pi is quitting). */
+export function acquire(cfg: Config, p: Policy): { vm: Promise<any>; release: (now?: boolean) => Promise<void> | undefined } {
 	const key = `${realpathSync(p.projectPath)}::${p.roleId ?? ""}`;
 	let e = vms.get(key);
 	if (!e) {
@@ -220,16 +314,18 @@ export function acquire(cfg: Config, p: Policy): { vm: Promise<any>; release: ()
 	e.users++;
 	const entry = e;
 	let released = false;
+	const close = () => {
+		vms.delete(key);
+		return entry.vm.then((vm) => vm.close()).catch(() => {});
+	};
 	return {
 		vm: entry.vm,
-		release: () => {
+		release: (now = false) => {
 			if (released) return;
 			released = true;
 			if (--entry.users > 0) return;
-			entry.timer = setTimeout(() => {
-				vms.delete(key);
-				entry.vm.then((vm) => vm.close()).catch(() => {});
-			}, 30_000);
+			if (now) return close();
+			entry.timer = setTimeout(close, 30_000);
 			entry.timer.unref();
 		},
 	};
