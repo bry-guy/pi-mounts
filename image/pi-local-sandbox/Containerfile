@@ -2,8 +2,10 @@
 FROM registry.fedoraproject.org/fedora-minimal:45
 ARG MISE_VERSION=v2026.10.25
 COPY update-ca-certificates /usr/sbin/update-ca-certificates
+# Gondolin's init configures eth0 with `ip` and `udhcpc`; krun boots without the initramfs that does it under qemu
+COPY udhcpc-default.script /usr/share/udhcpc/default.script
 RUN dnf5 -y install --setopt=install_weak_deps=False \
-      bash ca-certificates coreutils curl diffutils e2fsprogs fd-find file findutils gh git gzip grep jq make \
+      bash busybox ca-certificates coreutils curl diffutils e2fsprogs fd-find file findutils gh git gzip grep iproute jq make \
       openssh-clients patch python3 ripgrep sed tar util-linux-core xz zstd \
  && dnf5 clean all \
  && arch=$([ "$(uname -m)" = x86_64 ] && echo x64 || echo arm64) \

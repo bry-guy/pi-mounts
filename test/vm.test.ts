@@ -31,6 +31,7 @@ test("VM: repos read-only, .git and worktrees writable, hidden files gone, unlis
 		assert.notEqual(await run(`cat ${repo}/.env`), 0);
 		assert.notEqual(await run(`cat ${root}/project.json`), 0);
 		assert.equal((await vm.exec(["/bin/sh", "-c", "curl -s -o /dev/null -w '%{http_code}' https://example.com"])).stdout, "403");
+		assert.equal((await vm.exec(["/bin/sh", "-c", "curl -s -o /dev/null -w '%{http_code}' https://github.com/"])).stdout, "200", "no network at boot: the image needs ip and udhcpc");
 	} finally {
 		await vm.close();
 	}
