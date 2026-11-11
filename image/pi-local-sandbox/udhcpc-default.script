@@ -1,0 +1,16 @@
+#!/bin/sh
+# busybox udhcpc hook for eth0: applies the lease with ip (Gondolin's init runs udhcpc -s on eth0).
+case "$1" in
+deconfig)
+	ip -4 addr flush dev "$interface"
+	;;
+bound | renew)
+	ip -4 addr flush dev "$interface"
+	ip -4 addr add "$ip/$mask" dev "$interface"
+	ip link set dev "$interface" up
+	[ -n "$router" ] && ip -4 route replace default via "${router%% *}" dev "$interface"
+	: > /etc/resolv.conf
+	for ns in $dns; do echo "nameserver $ns" >> /etc/resolv.conf; done
+	;;
+esac
+exit 0

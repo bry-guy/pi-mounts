@@ -52,6 +52,10 @@ try {
   check("(h) VM boot", r.code === 0, `${boot} ms`);
   r = await run("node --version; git --version; mise --version; rg --version | head -1; fd --version");
   check("(h) tools present", r.code === 0, r.out.replace(/\n/g, " | "));
+  r = await run("while read -r _ dest _; do [ \"$dest\" = 00000000 ] && exit 0; done < /proc/net/route; exit 1");
+  check("(h) guest has a default route at boot", r.code === 0);
+  r = await run("getent hosts github.com");
+  check("(h) guest resolves an allowed host at boot", r.code === 0, r.out.trim());
 
   r = await run(`echo b >> ${repo}/a.txt`);
   check("(a) repos/ read-only", r.code !== 0, r.out.trim());

@@ -55,6 +55,8 @@ Set `GONDOLIN_CLI` for `setup.sh` to the same build.
 
 The image is `pi-local-sandbox` (`image/pi-local-sandbox/Containerfile`): Fedora minimal with bash, git, gh, ripgrep,
 fd, curl, jq, make, python and mise. It holds tools only; pi runs on the host, and node comes from mise per repo.
+It also ships busybox's `udhcpc` and iproute's `ip`, which bring up the guest's network at boot: Gondolin's krun backend
+boots without the initramfs that does this under qemu, so the rootfs has to. Rebuild the assets after changing the image.
 `setup.sh` builds it with docker and turns it into Gondolin assets through Gondolin's `oci` rootfs. CI publishes it
 multi-arch as `ghcr.io/bry-guy/pi-local-sandbox`, for building your own image `FROM` it.
 
