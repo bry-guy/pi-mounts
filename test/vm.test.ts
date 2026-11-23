@@ -44,6 +44,10 @@ test("VM: repos read-only, .git and worktrees writable, hidden files gone, unlis
 		assert.equal(await run(`echo x > ${root}/worktrees/f`), 0);
 		assert.notEqual(await run(`cat ${repo}/.env`), 0);
 		assert.notEqual(await run(`cat ${root}/project.json`), 0);
+		// Appeared after the VM started: not in the fixed list, refused by the guard.
+		writeFileSync(join(root, "worktrees", ".env.late"), "S=1");
+		assert.notEqual(await run(`cat ${root}/worktrees/.env.late`), 0);
+		assert.notEqual(await run(`echo x > ${root}/worktrees/.envrc`), 0);
 		assert.equal((await vm.exec(["/bin/sh", "-c", "curl -s -o /dev/null -w '%{http_code}' https://example.com"])).stdout, "403");
 		assert.equal((await vm.exec(["/bin/sh", "-c", "curl -s -o /dev/null -w '%{http_code}' https://github.com/"])).stdout, "200", "no network at boot: the image needs ip and udhcpc");
 	} finally {
@@ -67,4 +71,36 @@ test("tracked files with hidden names stay visible; untracked ones are hidden", 
 	assert.ok(!v.isTracked(join(d, ".env")));
 	assert.ok(!v.isTracked(join(d, ".pi", "secret-broker.json")));
 	assert.ok(!v.isTracked(join(tmpdir(), "project.json")));
+});
+
+test("hiddenPaths lists untracked hidden names; hiddenGuard refuses late ones and their creation", () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "pm-")));
+	const d = join(root, "worktrees", "a");
+	for (const dir of [".pi/roles", "sub", "node_modules/x"]) mkdirSync(join(d, dir), { recursive: true });
+	execFileSync("git", ["init", "-q", d]);
+	for (const f of [".pi/roles/r.json", ".envrc", ".env", ".pi/secret-broker.json", "sub/.env.local", "node_modules/x/.env", "a.txt"]) writeFileSync(join(d, f), "x");
+	execFileSync("git", ["-C", d, "add", ".pi/roles/r.json", ".envrc", "a.txt"]);
+	assert.deepEqual(v.hiddenPaths(d, true).sort(), ["/.env", "/.pi/secret-broker.json", "/sub/.env.local"]);
+	assert.deepEqual(v.hiddenPaths(d, false).sort(), ["/.env", "/.envrc", "/.pi", "/sub/.env.local"]);
+	assert.deepEqual(v.hiddenPaths(d, false, [join(d, "sub")]).sort(), ["/.env", "/.envrc", "/.pi"]);
+
+	const guard = v.hiddenGuard({ projectPath: root, egress: [], secrets: {} });
+	const code = (ctx: object) => {
+		try {
+			guard(ctx as any);
+		} catch (e) {
+			return (e as { code: string }).code;
+		}
+	};
+	assert.equal(code({ op: "open", flags: "r", path: join(d, ".env") }), "ENOENT");
+	assert.equal(code({ op: "lstat", path: join(d, ".pi", "secret-broker.json") }), "ENOENT");
+	assert.equal(code({ op: "rename", oldPath: join(d, ".env"), newPath: join(d, "copy") }), "ENOENT");
+	for (const f of ["a.txt", ".envrc", ".pi/roles/r.json"]) assert.equal(code({ op: "open", flags: "r", path: join(d, f) }), undefined, f);
+	// Not there: reads find nothing on their own, creating is refused.
+	assert.equal(code({ op: "lstat", path: join(d, ".env.new") }), undefined);
+	assert.equal(code({ op: "open", flags: "w", path: join(d, ".env.new") }), "EACCES");
+	assert.equal(code({ op: "mkdir", path: join(d, "sub", ".pi") }), "EACCES");
+	assert.equal(code({ op: "rename", oldPath: join(d, "a.txt"), newPath: join(d, "fnox.local.toml") }), "EACCES");
+	assert.equal(code({ op: "open", flags: "r", path: join(root, "project.json") }), undefined, "absent here, so nothing to hide");
+	assert.equal(code({ op: "open", flags: "r", path: "/root/.env" }), undefined, "outside the project");
 });

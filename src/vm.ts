@@ -1,7 +1,7 @@
 // One Gondolin VM per project + role, shared by every session of this pi process (subagent children included).
 // Host paths are mounted at the same absolute paths, so pi's tools keep their paths.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { type Dirent, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -92,37 +92,102 @@ export async function loadGondolin(cfg: Config): Promise<any> {
 
 const roleKey = (roleId?: string) => (roleId ?? "none").replace("/", "--");
 
-/** The VFS mounts: project read-only, repos' .git, worktrees/ and artifacts/ writable, hidden names shadowed. */
-export function mounts(G: any, p: Policy): Record<string, unknown> {
-	// `root` is set only for code checkouts; the project folder itself sits in the pi-projects state repo, whose
-	// tracked project.json must stay hidden.
-	const shadow = (prov: unknown, root?: string) =>
-		new G.ShadowProvider(prov, {
-			shouldShadow: ({ path }: { path: string }) => isHidden(path) && !(root && isTracked(join(root, path))),
-			writeMode: "deny",
-		});
-	const ro = (dir: string, code = true) => shadow(new G.ReadonlyProvider(new G.RealFSProvider(dir)), code ? dir : undefined);
-	const rw = (dir: string, code = true) => shadow(new G.RealFSProvider(dir), code ? dir : undefined);
+/** Paths under `dir` (as mount paths, "/a/.env") that the sandbox must not see. In a code checkout, what git tracks
+ *  stays visible. `.git` and `node_modules` are not searched: neither holds local secrets. */
+export function hiddenPaths(dir: string, code: boolean, skip: string[] = []): string[] {
+	const out: string[] = [];
+	const walk = (rel: string) => {
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(join(dir, rel), { withFileTypes: true });
+		} catch {
+			return; // unreadable: nothing below it reaches the guest either
+		}
+		for (const e of entries) {
+			const p = `${rel}/${e.name}`;
+			const abs = join(dir, p);
+			if (e.name === ".git" || e.name === "node_modules" || skip.includes(abs)) continue;
+			if (isHidden(p) && !(code && isTracked(abs))) out.push(p);
+			else if (e.isDirectory()) walk(p);
+		}
+	};
+	walk("");
+	return out;
+}
+
+interface Tree {
+	/** Guest path */
+	at: string;
+	/** Host folder served there */
+	dir: string;
+	/** "code": a checkout, where files git tracks stay visible. "plain": nothing is hidden. */
+	kind: "project" | "code" | "plain";
+	readonly?: boolean;
+}
+
+/** What the guest sees of the project: the project read-only, repos' .git, worktrees/ and artifacts/ writable. */
+function trees(p: Policy): Tree[] {
 	const real = realpathSync(p.projectPath);
-	const out: Record<string, unknown> = {};
+	const out: Tree[] = [];
 	for (const base of new Set([real, ...(p.aliases ?? [])])) {
-		out[base] = ro(real, false);
+		// The project folder itself sits in the pi-projects state repo, whose tracked project.json must stay hidden.
+		out.push({ at: base, dir: real, kind: "project", readonly: true });
 		const repos = join(real, "repos");
 		if (existsSync(repos)) {
 			for (const r of readdirSync(repos)) {
-				out[join(base, "repos", r)] = ro(join(repos, r));
-				if (existsSync(join(repos, r, ".git"))) out[join(base, "repos", r, ".git")] = new G.RealFSProvider(join(repos, r, ".git"));
+				out.push({ at: join(base, "repos", r), dir: join(repos, r), kind: "code", readonly: true });
+				if (existsSync(join(repos, r, ".git"))) out.push({ at: join(base, "repos", r, ".git"), dir: join(repos, r, ".git"), kind: "plain" });
 			}
 		}
 		for (const d of ["worktrees", "artifacts"]) {
 			mkdirSync(join(real, d), { recursive: true });
-			out[join(base, d)] = rw(join(real, d), d === "worktrees");
+			out.push({ at: join(base, d), dir: join(real, d), kind: d === "worktrees" ? "code" : "project" });
 		}
+	}
+	return out;
+}
+
+/** The VFS mounts. Hidden paths are a fixed list, not a callback: Gondolin serves a mount straight from the host disk
+ *  only when it knows them up front. With a callback every file goes through this process, which is 2-3x slower.
+ *  `hiddenGuard` covers paths that appear later. */
+export function mounts(G: any, p: Policy): Record<string, unknown> {
+	const all = trees(p);
+	const out: Record<string, unknown> = {};
+	for (const t of all) {
+		let prov: unknown = new G.RealFSProvider(t.dir);
+		if (t.kind !== "plain") {
+			if (t.readonly) prov = new G.ReadonlyProvider(prov);
+			// Folders mounted on their own are searched as their own tree.
+			const nested = all.filter((o) => o.dir !== t.dir && o.dir.startsWith(`${t.dir}/`)).map((o) => o.dir);
+			prov = new G.ShadowProvider(prov, { shouldShadow: G.createShadowPathPredicate(hiddenPaths(t.dir, t.kind === "code", nested)), writeMode: "deny" });
+		}
+		out[t.at] = prov;
 	}
 	const home = join(CACHE, "home", roleKey(p.roleId));
 	mkdirSync(home, { recursive: true });
 	out["/root"] = new G.RealFSProvider(home); // mise tools, npm cache; only placeholders ever reach it
 	return out;
+}
+
+const CREATES = new Set(["mkdir", "symlink", "link", "rename", "mknod", "create"]);
+
+/** A Gondolin `before` hook: refuses guest file operations on hidden paths. `mounts` already hides the ones that
+ *  existed when the VM started; this covers a `.env` dropped into a worktree later, and keeps hidden names from
+ *  being created. One round trip to this process per file operation (about 5% on an npm ci or a test run). */
+export function hiddenGuard(p: Policy): (ctx: { op: string; path?: string; oldPath?: string; newPath?: string; flags?: string }) => void {
+	const all = trees(p).sort((a, b) => b.at.length - a.at.length);
+	return (ctx) => {
+		for (const path of [ctx.path, ctx.oldPath, ctx.newPath]) {
+			const t = path && all.find((o) => path === o.at || path.startsWith(`${o.at}/`));
+			if (!path || !t || t.kind === "plain") continue;
+			const rel = path.slice(t.at.length) || "/";
+			const host = join(t.dir, rel);
+			if (!isHidden(rel) || (t.kind === "code" && isTracked(host))) continue;
+			// A hidden file reads as absent. One that isn't there stays absent too, but can't be created.
+			if (existsSync(host)) throw Object.assign(new Error(`${path}: hidden from the sandbox`), { code: "ENOENT" });
+			if (path !== ctx.oldPath && (CREATES.has(ctx.op) || (ctx.op === "open" && /[wa+]/.test(ctx.flags ?? "")))) throw Object.assign(new Error(`${path}: can't be created in the sandbox`), { code: "EACCES" });
+		}
+	};
 }
 
 export function guestEnv(p: Policy, placeholders: Record<string, string>): Record<string, string> {
@@ -183,7 +248,7 @@ export async function createVm(cfg: Config, p: Policy): Promise<any> {
 		sandbox: { imagePath: image },
 		memory: cfg.memory ?? "4G",
 		cpus: cfg.cpus ?? 4,
-		vfs: { mounts: mounts(G, p) },
+		vfs: { mounts: mounts(G, p), hooks: { before: hiddenGuard(p) } },
 		httpHooks,
 		env: guestEnv(p, env),
 	});
