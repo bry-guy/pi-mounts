@@ -1,7 +1,7 @@
 // One Gondolin VM per project + role, shared by every session of this pi process (subagent children included).
 // Host paths are mounted at the same absolute paths, so pi's tools keep their paths.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { type Dirent, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -92,21 +92,43 @@ export async function loadGondolin(cfg: Config): Promise<any> {
 
 const roleKey = (roleId?: string) => (roleId ?? "none").replace("/", "--");
 
-/** The VFS mounts: project read-only, repos' .git, worktrees/ and artifacts/ writable, hidden names shadowed. */
+/** Paths under `dir` (as mount paths, "/a/.env") that the sandbox must not see. In a code checkout, what git tracks
+ *  stays visible. `.git` and `node_modules` are not searched: neither holds local secrets. */
+export function hiddenPaths(dir: string, code: boolean, skip: string[] = []): string[] {
+	const out: string[] = [];
+	const walk = (rel: string) => {
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(join(dir, rel), { withFileTypes: true });
+		} catch {
+			return; // unreadable: nothing below it reaches the guest either
+		}
+		for (const e of entries) {
+			const p = `${rel}/${e.name}`;
+			const abs = join(dir, p);
+			if (e.name === ".git" || e.name === "node_modules" || skip.includes(abs)) continue;
+			if (isHidden(p) && !(code && isTracked(abs))) out.push(p);
+			else if (e.isDirectory()) walk(p);
+		}
+	};
+	walk("");
+	return out;
+}
+
+/** The VFS mounts: project read-only, repos' .git, worktrees/ and artifacts/ writable, hidden paths shadowed. */
 export function mounts(G: any, p: Policy): Record<string, unknown> {
-	// `root` is set only for code checkouts; the project folder itself sits in the pi-projects state repo, whose
+	// A fixed list, not a callback: Gondolin serves a mount straight from the host disk only when the hidden paths
+	// are known up front. With a callback every file goes through this process instead, which is far slower.
+	// `code` is true only for code checkouts; the project folder itself sits in the pi-projects state repo, whose
 	// tracked project.json must stay hidden.
-	const shadow = (prov: unknown, root?: string) =>
-		new G.ShadowProvider(prov, {
-			shouldShadow: ({ path }: { path: string }) => isHidden(path) && !(root && isTracked(join(root, path))),
-			writeMode: "deny",
-		});
-	const ro = (dir: string, code = true) => shadow(new G.ReadonlyProvider(new G.RealFSProvider(dir)), code ? dir : undefined);
-	const rw = (dir: string, code = true) => shadow(new G.RealFSProvider(dir), code ? dir : undefined);
+	const shadow = (prov: unknown, dir: string, code: boolean, skip?: string[]) =>
+		new G.ShadowProvider(prov, { shouldShadow: G.createShadowPathPredicate(hiddenPaths(dir, code, skip)), writeMode: "deny" });
+	const ro = (dir: string, code = true, skip?: string[]) => shadow(new G.ReadonlyProvider(new G.RealFSProvider(dir)), dir, code, skip);
+	const rw = (dir: string, code = true) => shadow(new G.RealFSProvider(dir), dir, code);
 	const real = realpathSync(p.projectPath);
 	const out: Record<string, unknown> = {};
 	for (const base of new Set([real, ...(p.aliases ?? [])])) {
-		out[base] = ro(real, false);
+		out[base] = ro(real, false, [join(real, "repos"), join(real, "worktrees"), join(real, "artifacts")]);
 		const repos = join(real, "repos");
 		if (existsSync(repos)) {
 			for (const r of readdirSync(repos)) {
