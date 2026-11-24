@@ -41,8 +41,15 @@ into a worktree) and refuses to create them. `.git` and `node_modules` are not s
 ## Setup
 
 ```bash
+pi install npm:@bry-guy/pi-mounts
+~/.pi/agent/npm/node_modules/@bry-guy/pi-mounts/scripts/setup.sh   # builds the VM image into ~/.cache/pi-mounts (needs docker)
+```
+
+From git instead:
+
+```bash
 pi install git:github.com/bry-guy/pi-mounts
-~/.pi/agent/git/github.com/bry-guy/pi-mounts/scripts/setup.sh   # builds the VM image into ~/.cache/pi-mounts (needs docker)
+~/.pi/agent/git/github.com/bry-guy/pi-mounts/scripts/setup.sh
 ```
 
 Optional `~/.pi/agent/pi-mounts.json`:
