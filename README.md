@@ -20,6 +20,10 @@ Host paths are mounted at the same absolute paths, so tool paths don't change.
 | `/root` | per-role persistent home (`~/.cache/pi-mounts/home/<role>`): mise tools, npm cache |
 | everything else on the Mac | not there |
 
+Hidden paths that exist when the VM starts are handed to Gondolin as a fixed list, so it serves the mounts straight
+from the host disk. A check on every guest file operation covers hidden names that appear later (a `.env` dropped
+into a worktree) and refuses to create them. `.git` and `node_modules` are not searched for the list.
+
 - **Network:** only package registries and tool downloads (`DEFAULT_EGRESS` in `src/vm.ts`) plus the role's `egress`.
   Anything else gets `403 blocked by policy`. Tailnet and private addresses are blocked too, so the k3s API goes
   through a broker action.
@@ -47,11 +51,9 @@ Optional `~/.pi/agent/pi-mounts.json`:
 { "gondolin": "/path/to/gondolin/host/dist/src/index.js", "image": "~/.cache/pi-mounts/pi-local-sandbox", "memory": "4G", "cpus": 4 }
 ```
 
-`gondolin` points at a local build (branch `local` in `~/dev/gondolin`) while two fixes are upstream:
-- `fix/undici-7`: on Node 22 hosts, undici 6's `fetch` passes zstd bodies through undecoded, so some downloads arrive
-  corrupted ([bry-guy/gondolin](https://github.com/bry-guy/gondolin), PR pending);
-- `fix/tls-resumption`: on Node 26 hosts, a guest's second HTTPS connection (TLS session resumption, as git and curl
-  do) fails with `tlsv1 alert decrypt error`; picking the certificate from the parsed SNI fixes it.
+`gondolin` points at a local build of upstream `main` (`~/dev/gondolin`): the native engine pi-mounts runs on is
+newer than the last npm release (0.14.0). Build the host (`pnpm run build` in `host/`) and the daemon in release mode
+(`make release` in `native/`); a debug daemon is about 1.5x slower on a test run.
 
 Set `GONDOLIN_CLI` for `setup.sh` to the same build.
 
