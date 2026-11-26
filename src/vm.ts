@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { type Dirent, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { BRIDGE_GUEST_PORT, BRIDGE_HOST, type GoogleLogin, bridgeRelay, googlePathAllowed, googleTokenFacade } from "./agy.ts";
 
 export interface Config {
 	/** Gondolin host module (dist/src/index.js); a locally patched build until upstream has the fix */
@@ -29,6 +30,8 @@ export interface Policy {
 	git?: { name: string; email: string };
 	/** The host user's git identity: commit author inside the VM (the role stays committer). */
 	author?: { name: string; email: string };
+	/** A Google login kept on the host for agy (a role secret of kind "google-oauth"); see src/agy.ts */
+	google?: GoogleLogin;
 }
 
 export const CACHE = join(homedir(), ".cache", "pi-mounts");
@@ -90,7 +93,7 @@ export async function loadGondolin(cfg: Config): Promise<any> {
 	return gondolin;
 }
 
-const roleKey = (roleId?: string) => (roleId ?? "none").replace("/", "--");
+export const roleKey = (roleId?: string) => (roleId ?? "none").replace("/", "--");
 
 /** Paths under `dir` (as mount paths, "/a/.env") that the sandbox must not see. In a code checkout, what git tracks
  *  stays visible. `.git` and `node_modules` are not searched: neither holds local secrets. */
@@ -240,10 +243,15 @@ export async function createVm(cfg: Config, p: Policy): Promise<any> {
 	const G = await loadGondolin(cfg);
 	const image = cfg.image || join(CACHE, "pi-local-sandbox");
 	if (!existsSync(join(image, "manifest.json"))) throw new Error(`No sandbox image at ${image}. Run scripts/setup.sh in pi-mounts.`);
+	const g = p.google;
+	let setAccess = (_token: string) => {};
 	const { httpHooks, env, secretManager } = G.createHttpHooks({
 		allowedHosts: [...new Set([...DEFAULT_EGRESS, ...p.egress])],
-		secrets: p.secrets,
+		// The access token's real value is known only after agy's first token call goes through the facade.
+		secrets: g ? { ...p.secrets, [g.name]: { hosts: g.hosts, value: "", placeholder: g.access } } : p.secrets,
+		...(g ? { onRequest: googleTokenFacade(g, (t) => setAccess(t)), isRequestAllowed: googlePathAllowed } : {}),
 	});
+	if (g) setAccess = (t) => secretManager.updateSecret(g.name, { value: t });
 	const vm = await G.VM.create({
 		sandbox: { imagePath: image },
 		memory: cfg.memory ?? "4G",
@@ -251,6 +259,13 @@ export async function createVm(cfg: Config, p: Policy): Promise<any> {
 		vfs: { mounts: mounts(G, p), hooks: { before: hiddenGuard(p) } },
 		httpHooks,
 		env: guestEnv(p, env),
+		// agy reaches the bridge's MCP server on the host through pi-bridge.internal (raw TCP, so replies stream).
+		...(g
+			? {
+					dns: { mode: "synthetic", syntheticHostMapping: "per-host" },
+					tcp: { hosts: { [`${BRIDGE_HOST}:${BRIDGE_GUEST_PORT}`]: `127.0.0.1:${(await bridgeRelay()).port}` } },
+				}
+			: {}),
 	});
 	if (p.refresh && Object.keys(p.secrets).length) {
 		const timer = setInterval(() => {
