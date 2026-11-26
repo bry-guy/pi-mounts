@@ -2,8 +2,9 @@
 // A session is sandboxed when PI_ROLE is set (role runs) or its project's signed grant says sandbox: true
 // (pi-projects decides; see docs/agent-roles.md there). Sandboxed sessions fail closed: if the VM can't start,
 // every tool call is refused, and only allowlisted host tools run.
-import { posix } from "node:path";
+import { join, posix } from "node:path";
 import { constants as fsConstants } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
 	createBashToolDefinition,
 	createEditToolDefinition,
@@ -16,7 +17,27 @@ import {
 	type ExtensionContext,
 	truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import { acquire, type Config, hostGitIdentity, loadConfig, type Policy } from "./vm.ts";
+import { type GoogleLogin, placeholders, startAgyRelay } from "./agy.ts";
+import { acquire, CACHE, type Config, hostGitIdentity, loadConfig, type Policy, roleKey } from "./vm.ts";
+
+const AGY_VM = fileURLToPath(new URL("../bin/agy-vm.mjs", import.meta.url));
+
+// One agy relay per pi process (AGY_BIN's environment is process-wide). Sessions of one process share the VM of their
+// project and role (subagent children included), so the relay serves the most recent sandboxed session's VM.
+const agy: { users: Set<symbol>; vm?: Promise<any>; relay?: Promise<{ path: string; close: () => void }> } = { users: new Set() };
+async function agyAttach(user: symbol, vm: Promise<any>) {
+	agy.users.add(user);
+	agy.vm = vm;
+	agy.relay ??= startAgyRelay(() => agy.vm ?? Promise.reject(new Error("no sandboxed session")));
+	process.env.PI_MOUNTS_AGY_SOCKET = (await agy.relay).path;
+}
+function agyDetach(user: symbol) {
+	if (!agy.users.delete(user) || agy.users.size) return;
+	const relay = agy.relay;
+	agy.relay = agy.vm = undefined;
+	delete process.env.PI_MOUNTS_AGY_SOCKET;
+	relay?.then((r) => r.close()).catch(() => {});
+}
 
 const BUILTINS = ["read", "write", "edit", "bash", "ls", "find", "grep"];
 /** Host tools a sandboxed session may still use: they don't hand the agent host access or Bryan's credentials. */
@@ -70,6 +91,22 @@ async function guestExec(vm: any, command: string, cwd: string, opts: { onData?:
 export default function (pi: ExtensionAPI) {
 	const cfg: Config = loadConfig();
 	let sb: Sandbox = { allowed: new Set() };
+	const self = Symbol("pi-mounts session");
+
+	pi.registerCommand("agy-login", {
+		description: "Sign agy (Antigravity) in for this session's role; the login is kept on the host",
+		handler: async (_args: string, ctx: ExtensionContext) => {
+			if (!agy.users.has(self) || !process.env.PI_MOUNTS_AGY_SOCKET) {
+				ctx.ui.notify("agy-login needs a sandboxed session whose role declares a google-oauth secret (start pi with PI_ROLE=<repo>/<role>).", "warning");
+				return;
+			}
+			ctx.ui.notify(
+				`In another terminal, run:\n  PI_MOUNTS_AGY_SOCKET=${process.env.PI_MOUNTS_AGY_SOCKET} ${AGY_VM}\n` +
+					"and sign in with Google. agy runs in this role's VM; the real tokens stay on the host (pi-secret-broker), the VM keeps placeholders.",
+				"info",
+			);
+		},
+	});
 
 	const vm = async () => {
 		if (sb.error) throw new Error(`Sandbox unavailable: ${sb.error}`);
@@ -189,6 +226,8 @@ export default function (pi: ExtensionAPI) {
 		const role = project ? api.sessionRole(project, process.env, { fetch: false }) : undefined;
 		const required = !!process.env.PI_ROLE || !!role?.sandbox;
 		if (!required) return;
+		// bin/agy-vm refuses to run agy on the host in a sandboxed process.
+		process.env.PI_MOUNTS_SANDBOXED = "1";
 		const status = (s: string) => ctx.ui.setStatus("pi-mounts", s);
 		if (!project) {
 			sb = { error: "role runs need a pi project", allowed: new Set() };
@@ -197,7 +236,25 @@ export default function (pi: ExtensionAPI) {
 		}
 		let secrets: Policy["secrets"] = {};
 		let refresh: Policy["refresh"];
-		const wanted = Object.entries(role?.role?.secrets ?? {}) as [string, { hosts: string[] }][];
+		const declared = Object.entries(role?.role?.secrets ?? {}) as [string, { hosts: string[]; kind?: string }][];
+		const wanted = declared.filter(([, s]) => s.kind !== "google-oauth");
+		const googleSecret = declared.find(([, s]) => s.kind === "google-oauth");
+		let google: GoogleLogin | undefined;
+		if (googleSecret) {
+			const [name, s] = googleSecret;
+			const broker = (globalThis as any)[Symbol.for("pi-secret-broker.v1")];
+			if (!broker?.storeSecret) {
+				ctx.ui.notify("pi-mounts: agy needs pi-secret-broker with storeSecret; continuing without it", "warning");
+			} else {
+				const sources = api.trustedGrants().grants.sources[role.roleId];
+				let real: string | undefined;
+				try {
+					real = broker.resolveSecrets(sources, [name])[name];
+				} catch {} // not signed in yet: /agy-login
+				const ph = placeholders(join(CACHE, "agy", `${roleKey(role.roleId)}.json`));
+				google = { name, hosts: s.hosts ?? [], ...ph, real, store: (v) => broker.storeSecret(sources, name, v) };
+			}
+		}
 		if (wanted.length) {
 			try {
 				const broker = (globalThis as any)[Symbol.for("pi-secret-broker.v1")];
@@ -219,8 +276,10 @@ export default function (pi: ExtensionAPI) {
 			author: role?.role?.git ? hostGitIdentity() : undefined,
 			egress: role?.role?.egress ?? [],
 			secrets,
+			google,
 		};
 		const { vm: v, release } = acquire(cfg, policy);
+		if (google) await agyAttach(self, v);
 		sb = { policy, vm: v, release, allowed: new Set([...HOST_TOOLS, ...(role?.role?.tools ?? [])]) };
 		status(`sandbox: ${role?.roleId ?? "no role"}`);
 		if (!role?.roleId) {
@@ -238,6 +297,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => {
+		agyDetach(self);
 		sb.release?.();
 		sb = { allowed: new Set() };
 	});
