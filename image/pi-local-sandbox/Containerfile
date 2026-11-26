@@ -1,6 +1,12 @@
 # pi-local-sandbox: the Gondolin VM's root filesystem on the Mac (tools only; pi runs on the host).
 FROM registry.fedoraproject.org/fedora-minimal:45
 ARG MISE_VERSION=v2026.10.25
+# agy (Antigravity CLI) for roles with a google-oauth secret: pinned build from Google's release manifest
+# (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_<arch>.json).
+# It can't update itself in the VM (no egress to the updater); bump these to update.
+ARG AGY_BUILD=1.5.18-6386224290725888
+ARG AGY_SHA512_X64=ef379ec869719112f696e8c7cfddf776618712e58fc38e53df80801d6528abb4677782c7c8778f9c09c9123fa44c2c32675d228c06f2a8f7a8f4214e75f5bb26
+ARG AGY_SHA512_ARM64=6c59cbce5a7632083dd4ef594296e52ce0abdc12f8b4ecb55523e093748cf178f8f8383d7e51e9ed7859ea6e46c83a43a7b46364b0e033dd13afb24d6bfbe4c8
 COPY update-ca-certificates /usr/sbin/update-ca-certificates
 # Gondolin's init configures eth0 with `ip` and `udhcpc`; krun boots without the initramfs that does it under qemu
 COPY udhcpc-default.script /usr/share/udhcpc/default.script
@@ -11,6 +17,11 @@ RUN dnf5 -y install --setopt=install_weak_deps=False \
  && arch=$([ "$(uname -m)" = x86_64 ] && echo x64 || echo arm64) \
  && curl -fsSL "https://github.com/jdx/mise/releases/download/$MISE_VERSION/mise-$MISE_VERSION-linux-$arch" -o /usr/local/bin/mise \
  && chmod +x /usr/local/bin/mise \
+ && agy_dir=$([ "$arch" = x64 ] && echo linux-x64 || echo linux-arm) \
+ && agy_sum=$([ "$arch" = x64 ] && echo "$AGY_SHA512_X64" || echo "$AGY_SHA512_ARM64") \
+ && curl -fsSL "https://storage.googleapis.com/antigravity-public/antigravity-cli/$AGY_BUILD/$agy_dir/cli_linux_$arch.tar.gz" -o /tmp/agy.tgz \
+ && echo "$agy_sum  /tmp/agy.tgz" | sha512sum -c - \
+ && tar -xzf /tmp/agy.tgz -C /tmp antigravity && install -m 0755 /tmp/antigravity /usr/local/bin/agy && rm -f /tmp/agy.tgz /tmp/antigravity \
  # Gondolin builds the VM disk as an unprivileged user, so the owner must be able to read every file and write
  # every directory (Fedora ships /usr/bin 555, /etc/shadow 000, ...). Everything in the VM runs as root anyway.
  && find / -xdev \( -path /proc -o -path /sys \) -prune -o \
