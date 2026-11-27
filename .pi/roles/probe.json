@@ -1,0 +1,15 @@
+{
+  "description": "pi-mounts probe: oauth2 placeholder login, host ports, vm-exec (local test role, not committed)",
+  "sandbox": true,
+  "egress": ["dl.google.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudresourcemanager.googleapis.com", "cloudcode-pa.googleapis.com"],
+  "egressPaths": { "www.googleapis.com": ["/oauth2/"] },
+  "hostPorts": [8765],
+  "secrets": {
+    "GOOGLE": {
+      "kind": "oauth2",
+      "tokenUrl": "https://oauth2.googleapis.com/token",
+      "hosts": ["cloudresourcemanager.googleapis.com", "cloudcode-pa.googleapis.com"],
+      "placeholderPrefix": { "access": "ya29.", "refresh": "1//" }
+    }
+  }
+}
