@@ -17,7 +17,7 @@ import {
 	type ExtensionContext,
 	truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import { agyAdapter, agyNeedsSignIn, agySignIn } from "./agy.ts";
+import { agyAdapter, agyNeedsSignIn, agySignIn, seedBridgeModels } from "./agy.ts";
 import { startExecRelay } from "./exec-relay.ts";
 import { type OAuthLogin, placeholders } from "./oauth.ts";
 import { type SignInScript, type SignInUi, signIn } from "./sign-in.ts";
@@ -68,7 +68,14 @@ async function execAttach(user: symbol, vm: Promise<any>, ui: SignInUi, logins: 
 	exec.ui = ui;
 	exec.logins = logins;
 	exec.relay ??= startExecRelay(() => exec.vm ?? Promise.reject(new Error("no sandboxed session")), {
-		agy: { ...agyAdapter, before: (argv) => (SIGN_IN.agy.needed(argv) ? ensureSignedIn("agy") : undefined) },
+		agy: {
+			...agyAdapter,
+			before: async (argv) => {
+				if (!SIGN_IN.agy.needed(argv)) return;
+				await ensureSignedIn("agy");
+				if (exec.vm) seedBridgeModels(await exec.vm).then((ok) => ok && exec.ui?.notify("agy's models are listed for the antigravity bridge; restart pi to see them in /model.", "info"), () => {});
+			},
+		},
 	});
 	process.env.PI_MOUNTS_EXEC_SOCKET = (await exec.relay).path;
 }

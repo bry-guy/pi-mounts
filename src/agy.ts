@@ -1,6 +1,9 @@
 // agy (the Antigravity CLI, driven by @estebanforge/pi-antigravity-bridge) in the role's VM: the exec relay's adapter
 // for it. The generic parts are src/exec-relay.ts (AGY_BIN = bin/agy-vm), src/host-ports.ts (agy reaches the bridge's
 // MCP server) and src/oauth.ts (the Google login stays on the host).
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { openHostPort } from "./host-ports.ts";
 import type { Adapter } from "./exec-relay.ts";
 import type { SignInScript } from "./sign-in.ts";
@@ -49,3 +52,17 @@ export const agyAdapter: Adapter = {
 		if (port) await openHostPort(vm, port);
 	},
 };
+
+/** The bridge lists models from `agy models` at pi start, before the VM is up, so it would only offer its fallback
+ *  names. Once agy is signed in, write the bridge's model cache from the VM; the bridge keeps using a cache even after
+ *  it goes stale (its background refresh fails quietly), so this is needed once. Takes effect on the next pi start. */
+export async function seedBridgeModels(vm: any, file = join(getAgentDir(), "antigravity-bridge", "models-cache.json")): Promise<boolean> {
+	if (existsSync(file)) return false;
+	const r = await vm.exec(["agy", "models"], { stdout: "pipe", stderr: "pipe" });
+	const raw = String(r.stdout ?? "");
+	if (r.exitCode !== 0 || !/^\s*gemini-/m.test(raw)) return false;
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(`${file}.tmp`, `${JSON.stringify({ raw, savedAt: Date.now() }, null, 2)}\n`, { mode: 0o600 });
+	renameSync(`${file}.tmp`, file);
+	return true;
+}

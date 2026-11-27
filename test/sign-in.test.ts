@@ -49,3 +49,14 @@ test("agy needs a login for real runs, not for probes or its own sign-in screen"
 	assert.equal(agyNeedsSignIn(["--version"]), false);
 	assert.equal(agyNeedsSignIn([]), false);
 });
+
+test("seedBridgeModels writes the bridge's model cache once, from agy in the VM", async () => {
+	const { seedBridgeModels } = await import("../src/agy.ts");
+	const file = join(mkdtempSync(join(tmpdir(), "seed-")), "antigravity-bridge", "models-cache.json");
+	const vm = { exec: async () => ({ exitCode: 0, stdout: "Fetching available models...\ngemini-x-high  Gemini X\n" }) };
+	assert.equal(await seedBridgeModels(vm, file), true);
+	assert.match(JSON.parse(readFileSync(file, "utf8")).raw, /gemini-x-high/);
+	assert.equal(await seedBridgeModels(vm, file), false);
+	const failing = { exec: async () => ({ exitCode: 1, stdout: "Error: 403" }) };
+	assert.equal(await seedBridgeModels(failing, `${file}.2`), false);
+});
