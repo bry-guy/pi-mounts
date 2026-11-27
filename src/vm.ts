@@ -276,6 +276,8 @@ export async function createVm(cfg: Config, p: Policy): Promise<any> {
 			sandbox: { imagePath: image },
 			memory: cfg.memory ?? "4G",
 			cpus: cfg.cpus ?? 4,
+			// Gondolin's default scratch tmpfs set minus /root, which would hide the role's home mount (newer Gondolin only).
+			tmpfs: { "/tmp": {}, "/var/tmp": {}, "/var/cache": {}, "/var/log": {} },
 			vfs: { mounts: mounts(G, p), hooks: { before: hiddenGuard(p) } },
 			httpHooks,
 			env: guestEnv(p, env),

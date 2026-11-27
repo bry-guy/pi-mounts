@@ -144,9 +144,9 @@ CLI. The three features above run it in the role's VM with the Google login kept
 
 ```json
 "secrets": { "GOOGLE": { "kind": "oauth2", "tokenUrl": "https://oauth2.googleapis.com/token",
-                         "hosts": ["cloudcode-pa.googleapis.com"], "placeholderPrefix": { "access": "ya29.", "refresh": "1//" },
-                         "signIn": "agy" } },
-"egress": ["oauth2.googleapis.com", "cloudcode-pa.googleapis.com", "www.googleapis.com"],
+                         "hosts": ["cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com"],
+                         "placeholderPrefix": { "access": "ya29.", "refresh": "1//" }, "signIn": "agy" } },
+"egress": ["oauth2.googleapis.com", "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com", "www.googleapis.com"],
 "egressPaths": { "www.googleapis.com": ["/oauth2/"] },
 "hostPorts": []
 ```
