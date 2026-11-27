@@ -37,6 +37,8 @@ const exec: {
 	signing: Map<string, Promise<void>>;
 } = { users: new Set(), logins: new Map(), signing: new Map() };
 
+const roleLogins = new Map<string, OAuthLogin>();
+
 /** CLIs pi-mounts can sign in through pi's UI, and which of their runs need a login. */
 const SIGN_IN: Record<string, { script: SignInScript; needed: (argv: string[]) => boolean }> = {
 	agy: { script: agySignIn, needed: agyNeedsSignIn },
@@ -311,7 +313,10 @@ export default function (pi: ExtensionAPI) {
 				real = broker.resolveSecrets(sources, [name])[name];
 			} catch {} // not signed in yet
 			const ph = placeholders(join(CACHE, "oauth", roleKey(role.roleId), `${name}.json`), s.placeholderPrefix);
-			const login: OAuthLogin = { name, tokenUrl: s.tokenUrl, hosts: s.hosts ?? [], ...ph, real, store: (v) => broker.storeSecret(sources, name, v) };
+			// One object per role login: a shared VM's token handler and later sessions must see the same stored login.
+			const key = `${roleKey(role.roleId)}/${name}`;
+			const login: OAuthLogin = roleLogins.get(key) ?? { name, tokenUrl: s.tokenUrl, hosts: s.hosts ?? [], ...ph, real, store: (v) => broker.storeSecret(sources, name, v) };
+			roleLogins.set(key, login);
 			oauth.push(login);
 			if (s.signIn && SIGN_IN[s.signIn]) logins.set(s.signIn, login);
 			else if (s.signIn) ctx.ui.notify(`pi-mounts: oauth2 secret ${name}: no sign-in for "${s.signIn}" (known: ${Object.keys(SIGN_IN).join(", ")})`, "warning");
