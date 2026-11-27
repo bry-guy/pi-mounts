@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { type Dirent, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { BRIDGE_GUEST_PORT, BRIDGE_HOST, type GoogleLogin, bridgeRelay, googlePathAllowed, googleTokenFacade } from "./agy.ts";
+import { hostPortRelay, hostPortVmOptions, openHostPort, registerHostPorts } from "./host-ports.ts";
+import { type OAuthLogin, pathsAllowed, tokenFacade } from "./oauth.ts";
 
 export interface Config {
 	/** Gondolin host module (dist/src/index.js); a locally patched build until upstream has the fix */
@@ -30,8 +31,13 @@ export interface Policy {
 	git?: { name: string; email: string };
 	/** The host user's git identity: commit author inside the VM (the role stays committer). */
 	author?: { name: string; email: string };
-	/** A Google login kept on the host for agy (a role secret of kind "google-oauth"); see src/agy.ts */
-	google?: GoogleLogin;
+	/** OAuth logins kept on the host (role secrets of kind "oauth2"); see src/oauth.ts */
+	oauth?: OAuthLogin[];
+	/** Hosts reachable only under these path prefixes (role "egressPaths") */
+	egressPaths?: Record<string, string[]>;
+	/** Host loopback ports reachable in the VM (role "hostPorts"); set (even empty) to let pi-mounts open more at run
+	 *  time. See src/host-ports.ts */
+	hostPorts?: number[];
 }
 
 export const CACHE = join(homedir(), ".cache", "pi-mounts");
@@ -243,30 +249,48 @@ export async function createVm(cfg: Config, p: Policy): Promise<any> {
 	const G = await loadGondolin(cfg);
 	const image = cfg.image || join(CACHE, "pi-local-sandbox");
 	if (!existsSync(join(image, "manifest.json"))) throw new Error(`No sandbox image at ${image}. Run scripts/setup.sh in pi-mounts.`);
-	const g = p.google;
-	let setAccess = (_token: string) => {};
+	const oauth = p.oauth ?? [];
+	const setAccess: Record<string, (token: string) => void> = {};
+	const facades = oauth.map((l) => tokenFacade(l, (t) => setAccess[l.name]?.(t)));
 	const { httpHooks, env, secretManager } = G.createHttpHooks({
 		allowedHosts: [...new Set([...DEFAULT_EGRESS, ...p.egress])],
-		// The access token's real value is known only after agy's first token call goes through the facade.
-		secrets: g ? { ...p.secrets, [g.name]: { hosts: g.hosts, value: "", placeholder: g.access } } : p.secrets,
-		...(g ? { onRequest: googleTokenFacade(g, (t) => setAccess(t)), isRequestAllowed: googlePathAllowed } : {}),
-	});
-	if (g) setAccess = (t) => secretManager.updateSecret(g.name, { value: t });
-	const vm = await G.VM.create({
-		sandbox: { imagePath: image },
-		memory: cfg.memory ?? "4G",
-		cpus: cfg.cpus ?? 4,
-		vfs: { mounts: mounts(G, p), hooks: { before: hiddenGuard(p) } },
-		httpHooks,
-		env: guestEnv(p, env),
-		// agy reaches the bridge's MCP server on the host through pi-bridge.internal (raw TCP, so replies stream).
-		...(g
+		// An OAuth access token's real value is known only after the CLI's first token call goes through its facade.
+		secrets: { ...p.secrets, ...Object.fromEntries(oauth.map((l) => [l.name, { hosts: l.hosts, value: "", placeholder: l.access }])) },
+		...(facades.length
 			? {
-					dns: { mode: "synthetic", syntheticHostMapping: "per-host" },
-					tcp: { hosts: { [`${BRIDGE_HOST}:${BRIDGE_GUEST_PORT}`]: `127.0.0.1:${(await bridgeRelay()).port}` } },
+					onRequest: async (req: Request) => {
+						for (const f of facades) {
+							const res = await f(req);
+							if (res) return res;
+						}
+					},
 				}
 			: {}),
+		...(p.egressPaths ? { isRequestAllowed: pathsAllowed(p.egressPaths) } : {}),
 	});
+	for (const l of oauth) setAccess[l.name] = (t) => secretManager.updateSecret(l.name, { value: t });
+	const ports = p.hostPorts ? await hostPortRelay(p.hostPorts) : undefined;
+	let vm: any;
+	try {
+		vm = await G.VM.create({
+			sandbox: { imagePath: image },
+			memory: cfg.memory ?? "4G",
+			cpus: cfg.cpus ?? 4,
+			vfs: { mounts: mounts(G, p), hooks: { before: hiddenGuard(p) } },
+			httpHooks,
+			env: guestEnv(p, env),
+			...(ports ? hostPortVmOptions(ports) : {}),
+		});
+	} catch (e) {
+		ports?.close();
+		throw e;
+	}
+	if (ports) {
+		registerHostPorts(vm, ports);
+		for (const port of ports.allowed) openHostPort(vm, port).catch(() => {}); // best effort: the port stays closed
+		const close = vm.close.bind(vm);
+		vm.close = () => (ports.close(), close());
+	}
 	if (p.refresh && Object.keys(p.secrets).length) {
 		const timer = setInterval(() => {
 			try {
