@@ -9,7 +9,7 @@
   "keywords": ["pi-package", "pi-extension", "gondolin", "sandbox"],
   "repository": { "type": "git", "url": "git+https://github.com/bry-guy/pi-mounts.git" },
   "files": ["src", "bin", "image", "scripts", "README.md", "LICENSE"],
-  "bin": { "agy-vm": "bin/agy-vm.mjs" },
+  "bin": { "vm-exec": "bin/vm-exec.mjs", "agy-vm": "bin/agy-vm.mjs" },
   "pi": { "extensions": ["./src/extension.ts"] },
   "dependencies": { "@earendil-works/gondolin": "^0.14.0" },
   "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
