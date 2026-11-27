@@ -1,5 +1,17 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import net from "node:net";
+
+// macOS has no setsid(1); perl's POSIX::setsid gives the same new process group, and exec keeps -w's wait.
+const hasSetsid = (() => {
+	try {
+		execFileSync("/usr/bin/setsid", ["true"]);
+		return true;
+	} catch {
+		return false;
+	}
+})();
+const hostArgv = (argv: string[]) =>
+	argv[0] === "/usr/bin/setsid" && !hasSetsid ? ["perl", "-MPOSIX", "-e", "POSIX::setsid(); exec @ARGV or die $!", ...argv.slice(2)] : argv;
 
 /** A stand-in for a Gondolin VM: exec runs the command on this machine, with the interface pi-mounts uses.
  *  `rewrite` maps guest argv to host argv. */
@@ -8,7 +20,7 @@ export function fakeVm(rewrite: (argv: string[]) => string[] = (a) => a) {
 	return {
 		killAll: () => children.forEach((c) => c.kill("SIGKILL")),
 		exec(argv: string[], opts: any = {}) {
-			const [cmd, ...args] = rewrite(argv);
+			const [cmd, ...args] = hostArgv(rewrite(argv));
 			const child = spawn(cmd, args, { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"] });
 			children.push(child);
 			const chunks: { stream: string; data: Buffer }[] = [];
@@ -39,11 +51,13 @@ export function fakeVm(rewrite: (argv: string[]) => string[] = (a) => a) {
 	};
 }
 
-/** Guest forwarders bind 127.0.0.2 here so they don't collide with the host server they forward to. */
-export function forwarderOn127002(relayPort: number) {
+/** Guest forwarders listen GUEST_SHIFT below the port they forward, so they don't collide with the host server
+ *  (macOS has no 127.0.0.2). Host test servers get ephemeral ports (>= 32768), so the shifted port stays valid. */
+export const GUEST_SHIFT = 20000;
+export function guestForwarder(relayPort: number) {
 	return (argv: string[]) =>
 		argv[0] === "/usr/bin/python3"
-			? ["python3", argv[1], argv[2].replace('s.bind(("127.0.0.1", port))', 's.bind(("127.0.0.2", port))'), argv[3], "127.0.0.1", String(relayPort)]
+			? ["python3", argv[1], argv[2].replace('s.bind(("127.0.0.1", port))', `s.bind(("127.0.0.1", port - ${GUEST_SHIFT}))`), argv[3], "127.0.0.1", String(relayPort)]
 			: argv;
 }
 

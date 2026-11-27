@@ -3,10 +3,10 @@ import { execFile } from "node:child_process";
 import http from "node:http";
 import { test } from "node:test";
 import { hostPortRelay, openHostPort, registerHostPorts } from "../src/host-ports.ts";
-import { fakeVm, forwarderOn127002, listen } from "./helpers/fake-vm.ts";
+import { fakeVm, GUEST_SHIFT, guestForwarder, listen } from "./helpers/fake-vm.ts";
 
 // Async: the host relay runs in this process.
-const get = (port: number) => new Promise<string>((res) => execFile("curl", ["-s", "--max-time", "3", `http://127.0.0.2:${port}/x`], (_e, out) => res(out)));
+const get = (port: number) => new Promise<string>((res) => execFile("curl", ["-s", "--max-time", "3", `http://127.0.0.1:${port - GUEST_SHIFT}/x`], (_e, out) => res(out)));
 
 test("an opened host port is reachable in the VM through the forwarder and the relay; others are not", async () => {
 	const server = http.createServer((req, res) => res.end(`host ${req.url}`));
@@ -14,7 +14,7 @@ test("an opened host port is reachable in the VM through the forwarder and the r
 	const other = http.createServer((_q, res) => res.end("secret"));
 	const otherPort = await listen(other);
 	const relay = await hostPortRelay();
-	const vm = fakeVm(forwarderOn127002(relay.port));
+	const vm = fakeVm(guestForwarder(relay.port));
 	try {
 		await assert.rejects(openHostPort(fakeVm(), port), /no host ports/);
 		registerHostPorts(vm, relay);

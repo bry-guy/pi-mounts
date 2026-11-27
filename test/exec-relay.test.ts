@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { agyAdapter, bridgePort, guestArgs } from "../src/agy.ts";
 import { startExecRelay } from "../src/exec-relay.ts";
 import { hostPortRelay, registerHostPorts } from "../src/host-ports.ts";
-import { fakeVm, forwarderOn127002, listen } from "./helpers/fake-vm.ts";
+import { fakeVm, GUEST_SHIFT, guestForwarder, listen } from "./helpers/fake-vm.ts";
 
 const bin = (f: string) => fileURLToPath(new URL(`../bin/${f}`, import.meta.url));
 
@@ -91,11 +91,11 @@ test("agy-vm: the bridge's session/new opens its MCP port in the VM before agy s
 	const mcpPort = await listen(mcp);
 	const ports = await hostPortRelay();
 	const vm = fakeVm((argv) => {
-		const a = forwarderOn127002(ports.port)(argv);
+		const a = guestForwarder(ports.port)(argv);
 		// "agy" in the VM: fetch the MCP URL (as the forwarder serves it) once session/new arrives, echo its argv.
 		return a.map((x) => (x === "agy" ? agy : x));
 	});
-	const agy = script(`echo "argv:$*" >&2\nread -r l\ncurl -s --max-time 3 http://127.0.0.2:${mcpPort}/mcp`);
+	const agy = script(`echo "argv:$*" >&2\nread -r l\ncurl -s --max-time 3 http://127.0.0.1:$((${mcpPort} - ${GUEST_SHIFT}))/mcp`);
 	registerHostPorts(vm, ports);
 	const relay = await startExecRelay(async () => vm, { agy: agyAdapter });
 	try {
