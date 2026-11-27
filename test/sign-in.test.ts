@@ -21,7 +21,7 @@ test("signIn: picks the menu entry, shows the URL, types the pasted code, finish
 	const vm = fakeVm(() => screen(out));
 	const l = login();
 	const notes: string[] = [];
-	await signIn(vm, l, { command: ["agy"], steps: [{ expect: /Select login method/, send: "\r" }], url: /https:\/\/accounts\.google\.com\/\S+/ }, {
+	await signIn(vm, l, { open: () => false, command: ["agy"], steps: [{ expect: /Select login method/, send: "\r" }], url: /https:\/\/accounts\.google\.com\/\S+/ }, {
 		notify: (m) => notes.push(m),
 		input: async () => {
 			// What the token facade does once the CLI exchanges the code.
@@ -35,7 +35,7 @@ test("signIn: picks the menu entry, shows the URL, types the pasted code, finish
 });
 
 test("signIn: cancelling the code prompt or the screen exiting fails it", async () => {
-	const script = { command: ["agy"], steps: [{ expect: /Select/, send: "\r" }], url: /https:\/\/\S+/ };
+	const script = { open: () => false, command: ["agy"], steps: [{ expect: /Select/, send: "\r" }], url: /https:\/\/\S+/ };
 	const vm = fakeVm(() => screen("/dev/null"));
 	await assert.rejects(signIn(vm, login(), script, { notify: () => {}, input: async () => undefined }), /cancelled/);
 	vm.killAll();

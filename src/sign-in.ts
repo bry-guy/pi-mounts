@@ -1,7 +1,16 @@
 // Signs a CLI in to an oauth2 role secret without a terminal: runs its sign-in screen in a pty in the VM, shows the user
 // the sign-in URL and asks for the code through pi's UI (terminal or pi-web). The token facade (src/oauth.ts) catches
 // the code exchange, so the real refresh token goes to the broker and the CLI keeps placeholders.
+import { spawn } from "node:child_process";
 import type { OAuthLogin } from "./oauth.ts";
+
+/** Opens the URL in the host's browser: the URL is too long to copy out of a wrapped terminal line intact.
+ *  shortcut: macOS only (pi-mounts' platform); elsewhere the user copies it from the message. */
+function openBrowser(url: string): boolean {
+	if (process.platform !== "darwin") return false;
+	spawn("open", [url], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+	return true;
+}
 
 export interface SignInScript {
 	/** Guest command that shows the sign-in screen */
@@ -10,6 +19,8 @@ export interface SignInScript {
 	steps?: { expect: RegExp; send: string }[];
 	/** The sign-in URL in the screen's output */
 	url: RegExp;
+	/** Opens the URL for the user; returns false if it couldn't (default: the host's browser) */
+	open?: (url: string) => boolean;
 }
 
 export interface SignInUi {
@@ -54,7 +65,13 @@ export async function signIn(vm: any, login: OAuthLogin, script: SignInScript, u
 				const url = !asked && script.url.exec(screen)?.[0];
 				if (url) {
 					asked = true;
-					ui.notify(`Sign in to ${login.name}: open this URL, then paste the code you get.\n${url}`, "info");
+					const opened = (script.open ?? openBrowser)(url);
+					ui.notify(
+						opened
+							? `Sign in to ${login.name} in the browser window that just opened, then paste the code you get. (If no window opened: ${url} )`
+							: `Sign in to ${login.name}: open this URL, then paste the code you get.\n${url}`,
+						"info",
+					);
 					ui.input(`${login.name} sign-in code`, "paste the code from the browser").then(
 						(code) => (code?.trim() ? proc.write(`${code.trim()}\r`) : stop(new Error("sign-in cancelled"))),
 						stop,
