@@ -1,7 +1,7 @@
-// Framing for the agy relay socket (shared by src/agy.ts and bin/agy-vm.mjs, plain JS so the wrapper runs anywhere).
-// A frame is one type byte, a 4-byte big-endian length, then the payload.
-//   wrapper -> pi-mounts: H hello (JSON {argv, cwd, pty, rows, cols}), I stdin data, E stdin end, R resize (JSON {rows, cols})
-//   pi-mounts -> wrapper: O stdout, Z stderr, X exit (JSON {code})
+// Framing for the exec relay socket (shared by src/exec-relay.ts and bin/vm-exec.mjs, plain JS so the wrapper runs
+// anywhere). A frame is one type byte, a 4-byte big-endian length, then the payload.
+//   vm-exec -> pi-mounts: H hello (JSON {cmd, argv, cwd, pty, rows, cols}), I stdin data, E stdin end, R resize (JSON {rows, cols})
+//   pi-mounts -> vm-exec: O stdout, Z stderr, X exit (JSON {code})
 
 export function frame(type, payload = Buffer.alloc(0)) {
 	const body = Buffer.isBuffer(payload) ? payload : Buffer.from(typeof payload === "string" ? payload : JSON.stringify(payload));

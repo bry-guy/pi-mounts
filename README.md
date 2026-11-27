@@ -71,57 +71,96 @@ boots without the initramfs that does this under qemu, so the rootfs has to. Reb
 `setup.sh` builds it with docker and turns it into Gondolin assets through Gondolin's `oci` rootfs. CI publishes it
 multi-arch as `ghcr.io/bry-guy/pi-local-sandbox`, for building your own image `FROM` it.
 
-## Antigravity (agy) in the VM
+## OAuth logins kept on the host
 
-This lets a role use Antigravity models through
-[`@estebanforge/pi-antigravity-bridge`](https://pi.dev/packages/@estebanforge/pi-antigravity-bridge), with `agy` and
-its own tools running in the role's VM. The Google login stays on the host, and the VM only holds placeholders.
-
-**Status:** unit-tested only. Before relying on it, check against a live account: `agy` must accept the placeholder
-tokens and work through Gondolin's HTTP/1.1 interception. You also need its exact list of Google hosts.
-
-It turns on when the role file declares a secret of kind `google-oauth`:
+A role secret of kind `oauth2` lets a CLI in the VM sign in and refresh on its own while the VM only ever holds
+placeholders. This works for logins that expire and refresh through a standard OAuth 2 token endpoint.
 
 ```json
-"secrets": { "AGY_GOOGLE": { "kind": "google-oauth", "hosts": ["cloudcode-pa.googleapis.com"] } },
-"egress": ["oauth2.googleapis.com", "cloudcode-pa.googleapis.com", "www.googleapis.com"]
+"secrets": {
+  "GOOGLE": {
+    "kind": "oauth2",
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "hosts": ["cloudcode-pa.googleapis.com"],
+    "placeholderPrefix": { "access": "ya29.", "refresh": "1//" }
+  }
+}
 ```
 
-In the signed grants file, its source must be writable (`keychain:` or `file:`), for example
-`"AGY_GOOGLE": "keychain:agy-<role>"`. It holds the real refresh token, written by pi-secret-broker's `storeSecret`.
-
-- **Starting agy.** Set `AGY_BIN` to `bin/agy-vm.mjs` (for example in the shell that starts pi) and `AGY_APPROVALS=off`.
-  The bridge's approval gate would replace pi-mounts' VM `bash`/`edit`/`write` with host ones.
-  - In a sandboxed process, the wrapper reaches pi-mounts over a host-only socket (`PI_MOUNTS_AGY_SOCKET`).
-    pi-mounts runs `agy` in the VM with stdio piped through, and closing the socket kills it.
-  - The bridge's `--gemini-dir` (a host folder linked to the host's own agy login) is dropped. `agy` uses the role's
-    home in the VM.
-  - Elsewhere the wrapper runs host `agy` (`PI_MOUNTS_HOST_AGY`, default `agy` on `PATH`). A sandboxed process
-    without the socket fails instead.
-- **Reaching pi's tools.** `agy` reaches the bridge's MCP server (pi's tools) in two hops. A forwarder in the VM
-  listens on the bridge's port. Gondolin's TCP mapping then carries `pi-bridge.internal:7777` to a host relay that
-  forwards to that port.
-- **The login.**
-  - The VM holds two placeholders, kept in `~/.cache/pi-mounts/agy/<role>.json`.
-  - pi-mounts answers `agy`'s own calls to `https://oauth2.googleapis.com/token`. It swaps the real refresh token into
-    the request, sends it from the host, keeps the new access token in Gondolin's secret manager and returns
-    placeholders. A refresh token Google issues (at login or on rotation) goes to the grants source.
-  - Gondolin swaps the access placeholder into `Authorization` only for the secret's `hosts`.
-  - `www.googleapis.com` is limited to `/oauth2/*`, since the `cloud-platform` scope would otherwise open other APIs
-    there.
-- **Signing in.**
-  1. Start pi as the role in the project (`PI_ROLE=<repo>/<role> pi`) and run `/agy-login`.
-  2. It prints a command for another terminal. That command runs `agy` interactively in the VM, where you pick Google
-     sign-in.
-  3. The code exchange goes through the token handler, so the real tokens land only in the grants source.
-- **The image** carries a pinned `agy` build, checked by sha512. It can't update itself in the VM, so bump
-  `AGY_BUILD` in the Containerfile to update it.
+- **The grants source** must be writable (`keychain:` or `file:`), e.g. `"GOOGLE": "keychain:agy-<role>"`. It holds the
+  real refresh token, which pi-secret-broker's `storeSecret` writes.
+- **Token calls.** pi-mounts answers the CLI's POSTs to `tokenUrl` itself (form or JSON bodies).
+  - It swaps the real refresh token into the request and sends it from the host.
+  - It keeps the new access token in Gondolin's secret manager and returns placeholders.
+  - A new refresh token, issued at sign-in or on rotation, goes to the grants source.
+  - Before sign-in, refreshes fail with `invalid_grant`.
+- **Access tokens.** Gondolin swaps the access placeholder into request headers for the secret's `hosts` only.
+- **Placeholders** are kept in `~/.cache/pi-mounts/oauth/<role>/<name>.json`. `placeholderPrefix` makes them look like
+  the provider's tokens, for CLIs that check the shape.
+- **Signing in.** Run the CLI's own login in the VM with `/vm-exec <cli> ...` (below); its code exchange goes through
+  the same handler.
 - **Limits.**
-  - Code in the VM can use the access placeholder while the VM runs, but only against the listed hosts, and it can't
-    take the token out.
-  - The `id_token` in token replies passes through as is.
-  - The bridge's artifact list and background-task watcher read the host's `~/.gemini`, so they show nothing for VM
-    runs.
+  - Code in the VM can use the access placeholder against the listed hosts while the VM runs, but can't take the token
+    out.
+  - Extra fields in token replies, such as an OpenID `id_token`, pass through as is.
+  - Tokens sent in URLs or request bodies, rather than headers, aren't swapped.
+
+`egressPaths` limits a host to path prefixes, for example `{ "www.googleapis.com": ["/oauth2/"] }`. It's useful when a
+broad token would otherwise open other APIs on an allowed host.
+
+## Running host-started programs in the VM
+
+Every sandboxed pi process runs an exec relay on a host-only Unix socket (`PI_MOUNTS_EXEC_SOCKET`).
+
+- `bin/vm-exec.mjs <command> [args]` runs the command in the session's VM. It passes through stdin, stdout, stderr and
+  the exit code. From a terminal it runs in a pty. Killing `vm-exec` kills the command.
+- Outside a sandboxed process it runs the command on the host. A sandboxed process without the relay refuses.
+- For an extension that starts a CLI from a configurable path, point that path at a shim that calls
+  `run("<command>", argv)`, like `bin/agy-vm.mjs`.
+- `/vm-exec <command>` in pi prints the line to run in another terminal, for interactive steps such as a CLI's login.
+
+## Host ports in the VM
+
+`"hostPorts": [5432]` in the role file makes the host's `127.0.0.1:5432` reachable at the same address in the VM.
+
+- A forwarder in the VM carries each connection over Gondolin's raw TCP mapping (`pi-host.internal:7777`) to a host
+  relay. Replies stream.
+- The relay connects only to ports opened for that VM.
+- Setting `hostPorts`, even to `[]`, also lets pi-mounts open ports at run time (the agy recipe below does this).
+
+## Recipe: Antigravity (agy)
+
+[`@estebanforge/pi-antigravity-bridge`](https://pi.dev/packages/@estebanforge/pi-antigravity-bridge) drives the `agy`
+CLI. The three features above run it in the role's VM with the Google login kept on the host.
+
+**Status:** unit-tested only. Before relying on it, check against a live account:
+
+- `agy` accepts the placeholder tokens;
+- it works through Gondolin's HTTP/1.1 interception;
+- the exact list of Google hosts it needs.
+
+```json
+"secrets": { "GOOGLE": { "kind": "oauth2", "tokenUrl": "https://oauth2.googleapis.com/token",
+                         "hosts": ["cloudcode-pa.googleapis.com"], "placeholderPrefix": { "access": "ya29.", "refresh": "1//" } } },
+"egress": ["oauth2.googleapis.com", "cloudcode-pa.googleapis.com", "www.googleapis.com"],
+"egressPaths": { "www.googleapis.com": ["/oauth2/"] },
+"hostPorts": []
+```
+
+1. Start pi with `AGY_BIN=<pi-mounts>/bin/agy-vm.mjs` and `AGY_APPROVALS=off`. The bridge's approval gate would
+   replace pi-mounts' VM `bash`/`edit`/`write` with host ones.
+2. Sign in once with `/vm-exec agy` and pick Google sign-in.
+
+What the `agy` adapter (`src/agy.ts`) adds:
+
+- It drops the bridge's `--gemini-dir`, a host folder linked to the host's own agy login. `agy` uses the role's home
+  in the VM instead.
+- When the bridge hands `agy` its MCP server (pi's tools) in `session/new`, it opens that host port in the VM first.
+
+The image carries a pinned `agy` build, checked by sha512. It can't update itself in the VM, so bump `AGY_BUILD` in the
+Containerfile to update it.
+
+The bridge's artifact list and background-task watcher read the host's `~/.gemini`, so they show nothing for VM runs.
 
 ## Checks
 
