@@ -2,8 +2,9 @@
 // A session is sandboxed when PI_ROLE is set (role runs) or its project's signed grant says sandbox: true
 // (pi-projects decides; see docs/agent-roles.md there). Sandboxed sessions fail closed: if the VM can't start,
 // every tool call is refused, and only allowlisted host tools run.
-import { posix } from "node:path";
+import { join, posix } from "node:path";
 import { constants as fsConstants } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
 	createBashToolDefinition,
 	createEditToolDefinition,
@@ -16,7 +17,77 @@ import {
 	type ExtensionContext,
 	truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import { acquire, type Config, hostGitIdentity, loadConfig, type Policy } from "./vm.ts";
+import { agyAdapter, agyNeedsSignIn, agySignIn, seedBridgeModels } from "./agy.ts";
+import { startExecRelay } from "./exec-relay.ts";
+import { type OAuthLogin, placeholders } from "./oauth.ts";
+import { type SignInScript, type SignInUi, signIn } from "./sign-in.ts";
+import { acquire, CACHE, type Config, hostGitIdentity, loadConfig, type Policy, roleKey } from "./vm.ts";
+
+const VM_EXEC = fileURLToPath(new URL("../bin/vm-exec.mjs", import.meta.url));
+const AGY_VM = fileURLToPath(new URL("../bin/agy-vm.mjs", import.meta.url));
+
+// One exec relay per pi process (its socket travels in process.env, which is process-wide). Sessions of one process
+// share the VM of their project and role (subagent children included), so it serves the latest sandboxed session's VM.
+const exec: {
+	users: Set<symbol>;
+	vm?: Promise<any>;
+	relay?: Promise<{ path: string; close: () => void }>;
+	ui?: SignInUi;
+	/** oauth2 logins by the command that signs in to them (role secret "signIn") */
+	logins: Map<string, OAuthLogin>;
+	signing: Map<string, Promise<void>>;
+} = { users: new Set(), logins: new Map(), signing: new Map() };
+
+const roleLogins = new Map<string, OAuthLogin>();
+
+/** CLIs pi-mounts can sign in through pi's UI, and which of their runs need a login. */
+const SIGN_IN: Record<string, { script: SignInScript; needed: (argv: string[]) => boolean }> = {
+	agy: { script: agySignIn, needed: agyNeedsSignIn },
+};
+
+/** Signs `cmd` in once (concurrent callers share the attempt) unless its login is already stored. */
+function ensureSignedIn(cmd: string, force = false): Promise<void> {
+	const login = exec.logins.get(cmd);
+	if (!login || (login.real && !force)) return Promise.resolve();
+	let p = exec.signing.get(login.name);
+	if (!p) {
+		const ui = exec.ui;
+		if (!ui || !exec.vm) return Promise.reject(new Error(`${login.name} isn't signed in and there's no session to ask in`));
+		if (force) login.real = undefined;
+		p = exec.vm
+			.then((vm) => signIn(vm, login, SIGN_IN[cmd].script, ui))
+			.then(() => ui.notify(`${login.name}: signed in`, "info"))
+			.finally(() => exec.signing.delete(login.name));
+		exec.signing.set(login.name, p);
+	}
+	return p;
+}
+
+async function execAttach(user: symbol, vm: Promise<any>, ui: SignInUi, logins: Map<string, OAuthLogin>) {
+	exec.users.add(user);
+	exec.vm = vm;
+	exec.ui = ui;
+	exec.logins = logins;
+	exec.relay ??= startExecRelay(() => exec.vm ?? Promise.reject(new Error("no sandboxed session")), {
+		agy: {
+			...agyAdapter,
+			before: async (argv) => {
+				if (!SIGN_IN.agy.needed(argv)) return;
+				await ensureSignedIn("agy");
+				if (exec.vm) seedBridgeModels(await exec.vm).then((ok) => ok && exec.ui?.notify("agy's models are listed for the antigravity bridge; restart pi to see them in /model.", "info"), () => {});
+			},
+		},
+	});
+	process.env.PI_MOUNTS_EXEC_SOCKET = (await exec.relay).path;
+}
+function execDetach(user: symbol) {
+	if (!exec.users.delete(user) || exec.users.size) return;
+	const relay = exec.relay;
+	exec.relay = exec.vm = exec.ui = undefined;
+	exec.logins = new Map();
+	delete process.env.PI_MOUNTS_EXEC_SOCKET;
+	relay?.then((r) => r.close()).catch(() => {});
+}
 
 const BUILTINS = ["read", "write", "edit", "bash", "ls", "find", "grep"];
 /** Host tools a sandboxed session may still use: they don't hand the agent host access or Bryan's credentials. */
@@ -68,8 +139,45 @@ async function guestExec(vm: any, command: string, cwd: string, opts: { onData?:
 }
 
 export default function (pi: ExtensionAPI) {
+	// The antigravity bridge starts `$AGY_BIN` (default `agy`), read when it loads. Point it at bin/agy-vm, which runs agy
+	// in the session's VM when sandboxed and the host's agy otherwise. Needs pi-mounts listed before the bridge.
+	if (!process.env.AGY_BIN) {
+		process.env.AGY_BIN = AGY_VM;
+		if ((globalThis as any)[Symbol.for("pi-antigravity-bridge:active")])
+			console.warn("pi-mounts: the antigravity bridge loaded first, so agy runs on the host; list pi-mounts before it in settings.json packages");
+	}
 	const cfg: Config = loadConfig();
 	let sb: Sandbox = { allowed: new Set() };
+	const self = Symbol("pi-mounts session");
+
+	pi.registerCommand("vm-exec", {
+		description: "Print the command that runs a program interactively in this session's VM (e.g. /vm-exec agy, to sign agy in)",
+		handler: async (args: string, ctx: ExtensionContext) => {
+			if (!exec.users.has(self) || !process.env.PI_MOUNTS_EXEC_SOCKET) {
+				ctx.ui.notify(notSandboxed(), "warning");
+				return;
+			}
+			ctx.ui.notify(`In another terminal, run:\n  PI_MOUNTS_EXEC_SOCKET=${process.env.PI_MOUNTS_EXEC_SOCKET} ${VM_EXEC} ${args.trim() || "<command> [args]"}`, "info");
+		},
+	});
+
+	const notSandboxed = () =>
+		sb.error
+			? `This session's sandbox is unavailable: ${sb.error}.`
+			: "This session isn't sandboxed: start pi inside a pi project with PI_ROLE=<repo>/<role>.";
+
+	pi.registerCommand("vm-login", {
+		description: "Sign a CLI in to its role login (e.g. /vm-login agy); pi-mounts also asks on the CLI's first run",
+		handler: async (args: string, ctx: ExtensionContext) => {
+			if (!exec.users.has(self)) return ctx.ui.notify(notSandboxed(), "warning");
+			const cmd = args.trim() || [...exec.logins.keys()][0];
+			if (!cmd || !exec.logins.has(cmd)) {
+				const known = [...exec.logins.keys()].join(", ") || "none";
+				return ctx.ui.notify(`No role login signs in with "${cmd ?? ""}" (this role's: ${known}).`, "warning");
+			}
+			await ensureSignedIn(cmd, true).catch((e) => ctx.ui.notify(`Sign-in failed: ${(e as Error).message}`, "error"));
+		},
+	});
 
 	const vm = async () => {
 		if (sb.error) throw new Error(`Sandbox unavailable: ${sb.error}`);
@@ -189,6 +297,8 @@ export default function (pi: ExtensionAPI) {
 		const role = project ? api.sessionRole(project, process.env, { fetch: false }) : undefined;
 		const required = !!process.env.PI_ROLE || !!role?.sandbox;
 		if (!required) return;
+		// bin/vm-exec refuses to run commands on the host in a sandboxed process.
+		process.env.PI_MOUNTS_SANDBOXED = "1";
 		const status = (s: string) => ctx.ui.setStatus("pi-mounts", s);
 		if (!project) {
 			sb = { error: "role runs need a pi project", allowed: new Set() };
@@ -197,7 +307,35 @@ export default function (pi: ExtensionAPI) {
 		}
 		let secrets: Policy["secrets"] = {};
 		let refresh: Policy["refresh"];
-		const wanted = Object.entries(role?.role?.secrets ?? {}) as [string, { hosts: string[] }][];
+		type Secret = { hosts: string[]; kind?: string; tokenUrl?: string; placeholderPrefix?: { access?: string; refresh?: string }; signIn?: string };
+		const logins = new Map<string, OAuthLogin>();
+		const declared = Object.entries(role?.role?.secrets ?? {}) as [string, Secret][];
+		const wanted = declared.filter(([, s]) => s.kind !== "oauth2");
+		const oauth: OAuthLogin[] = [];
+		for (const [name, s] of declared.filter(([, s]) => s.kind === "oauth2")) {
+			const broker = (globalThis as any)[Symbol.for("pi-secret-broker.v1")];
+			if (!s.tokenUrl) {
+				ctx.ui.notify(`pi-mounts: oauth2 secret ${name} has no tokenUrl; skipping it`, "warning");
+				continue;
+			}
+			if (!broker?.storeSecret) {
+				ctx.ui.notify(`pi-mounts: oauth2 secret ${name} needs pi-secret-broker with storeSecret; skipping it`, "warning");
+				continue;
+			}
+			const sources = api.trustedGrants().grants.sources[role.roleId];
+			let real: string | undefined;
+			try {
+				real = broker.resolveSecrets(sources, [name])[name];
+			} catch {} // not signed in yet
+			const ph = placeholders(join(CACHE, "oauth", roleKey(role.roleId), `${name}.json`), s.placeholderPrefix);
+			// One object per role login: a shared VM's token handler and later sessions must see the same stored login.
+			const key = `${roleKey(role.roleId)}/${name}`;
+			const login: OAuthLogin = roleLogins.get(key) ?? { name, tokenUrl: s.tokenUrl, hosts: s.hosts ?? [], ...ph, real, store: (v) => broker.storeSecret(sources, name, v) };
+			roleLogins.set(key, login);
+			oauth.push(login);
+			if (s.signIn && SIGN_IN[s.signIn]) logins.set(s.signIn, login);
+			else if (s.signIn) ctx.ui.notify(`pi-mounts: oauth2 secret ${name}: no sign-in for "${s.signIn}" (known: ${Object.keys(SIGN_IN).join(", ")})`, "warning");
+		}
 		if (wanted.length) {
 			try {
 				const broker = (globalThis as any)[Symbol.for("pi-secret-broker.v1")];
@@ -219,8 +357,12 @@ export default function (pi: ExtensionAPI) {
 			author: role?.role?.git ? hostGitIdentity() : undefined,
 			egress: role?.role?.egress ?? [],
 			secrets,
+			oauth,
+			egressPaths: role?.role?.egressPaths,
+			hostPorts: role?.role?.hostPorts,
 		};
 		const { vm: v, release } = acquire(cfg, policy);
+		await execAttach(self, v, ctx.ui, logins);
 		sb = { policy, vm: v, release, allowed: new Set([...HOST_TOOLS, ...(role?.role?.tools ?? [])]) };
 		status(`sandbox: ${role?.roleId ?? "no role"}`);
 		if (!role?.roleId) {
@@ -238,6 +380,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => {
+		execDetach(self);
 		sb.release?.();
 		sb = { allowed: new Set() };
 	});

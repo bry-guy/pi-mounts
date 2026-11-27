@@ -71,6 +71,104 @@ boots without the initramfs that does this under qemu, so the rootfs has to. Reb
 `setup.sh` builds it with docker and turns it into Gondolin assets through Gondolin's `oci` rootfs. CI publishes it
 multi-arch as `ghcr.io/bry-guy/pi-local-sandbox`, for building your own image `FROM` it.
 
+## OAuth logins kept on the host
+
+A role secret of kind `oauth2` lets a CLI in the VM sign in and refresh on its own while the VM only ever holds
+placeholders. This works for logins that expire and refresh through a standard OAuth 2 token endpoint.
+
+```json
+"secrets": {
+  "GOOGLE": {
+    "kind": "oauth2",
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "hosts": ["cloudcode-pa.googleapis.com"],
+    "placeholderPrefix": { "access": "ya29.", "refresh": "1//" },
+    "signIn": "agy"
+  }
+}
+```
+
+- **The grants source** must be writable (`keychain:` or `file:`), e.g. `"GOOGLE": "keychain:agy-<role>"`. It holds the
+  real refresh token, which pi-secret-broker's `storeSecret` writes.
+- **Token calls.** pi-mounts answers the CLI's POSTs to `tokenUrl` itself (form or JSON bodies).
+  - It swaps the real refresh token into the request and sends it from the host.
+  - It keeps the new access token in Gondolin's secret manager and returns placeholders.
+  - A new refresh token, issued at sign-in or on rotation, goes to the grants source.
+  - Before sign-in, refreshes fail with `invalid_grant`.
+- **Access tokens.** Gondolin swaps the access placeholder into request headers for the secret's `hosts` only.
+- **Placeholders** are kept in `~/.cache/pi-mounts/oauth/<role>/<name>.json`. `placeholderPrefix` makes them look like
+  the provider's tokens, for CLIs that check the shape.
+- **Signing in.** With `"signIn": "<cli>"`, pi-mounts signs the CLI in through pi's own UI (terminal or pi-web). On the
+  CLI's first run that needs the login, or on `/vm-login <cli>`, it runs the CLI's sign-in screen in a pty in the VM,
+  shows you the sign-in URL and asks for the code. The code exchange goes through the handler above. Known CLIs: `agy`
+  (`SIGN_IN` in `src/extension.ts`). Other CLIs can sign in by hand with `/vm-exec <cli> ...` (below).
+- **Limits.**
+  - Code in the VM can use the access placeholder against the listed hosts while the VM runs, but can't take the token
+    out.
+  - Extra fields in token replies, such as an OpenID `id_token`, pass through as is.
+  - Tokens sent in URLs or request bodies, rather than headers, aren't swapped.
+
+`egressPaths` limits a host to path prefixes, for example `{ "www.googleapis.com": ["/oauth2/"] }`. It's useful when a
+broad token would otherwise open other APIs on an allowed host.
+
+## Running host-started programs in the VM
+
+Every sandboxed pi process runs an exec relay on a host-only Unix socket (`PI_MOUNTS_EXEC_SOCKET`).
+
+- `bin/vm-exec.mjs <command> [args]` runs the command in the session's VM. It passes through stdin, stdout, stderr and
+  the exit code. From a terminal it runs in a pty. Killing `vm-exec` kills the command.
+- Outside a sandboxed process it runs the command on the host. A sandboxed process without the relay refuses.
+- For an extension that starts a CLI from a configurable path, point that path at a shim that calls
+  `run("<command>", argv)`, like `bin/agy-vm.mjs`.
+- `/vm-exec <command>` in pi prints the line to run in another terminal, for interactive steps such as a CLI's login.
+
+## Host ports in the VM
+
+`"hostPorts": [5432]` in the role file makes the host's `127.0.0.1:5432` reachable at the same address in the VM.
+
+- A forwarder in the VM carries each connection over Gondolin's raw TCP mapping (`pi-host.internal:7777`) to a host
+  relay. Replies stream.
+- The relay connects only to ports opened for that VM.
+- Setting `hostPorts`, even to `[]`, also lets pi-mounts open ports at run time (the agy recipe below does this).
+
+## Recipe: Antigravity (agy)
+
+[`@estebanforge/pi-antigravity-bridge`](https://pi.dev/packages/@estebanforge/pi-antigravity-bridge) drives the `agy`
+CLI. The three features above run it in the role's VM with the Google login kept on the host.
+
+**Status:** unit-tested only. Before relying on it, check against a live account:
+
+- `agy` accepts the placeholder tokens;
+- it works through Gondolin's HTTP/1.1 interception;
+- the exact list of Google hosts it needs.
+
+```json
+"secrets": { "GOOGLE": { "kind": "oauth2", "tokenUrl": "https://oauth2.googleapis.com/token",
+                         "hosts": ["cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com"],
+                         "placeholderPrefix": { "access": "ya29.", "refresh": "1//" }, "signIn": "agy" } },
+"egress": ["oauth2.googleapis.com", "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com", "www.googleapis.com"],
+"egressPaths": { "www.googleapis.com": ["/oauth2/"] },
+"hostPorts": []
+```
+
+1. List pi-mounts before the bridge in `packages`: pi-mounts then sets `AGY_BIN` to `bin/agy-vm.mjs` (unless you set
+   it), which runs agy in the VM in sandboxed sessions and the host's agy otherwise. Turn the bridge's approval gate
+   off (`"approvals": { "gateMode": "off" }` in `~/.pi/agent/antigravity-bridge/config.json`): it would replace
+   pi-mounts' VM `bash`/`edit`/`write` with host ones.
+2. Pick a Gemini model and chat. The first turn asks you to sign in: open the URL it shows, then paste the code
+   into the prompt. To sign in again later, run `/vm-login agy`.
+
+What the `agy` adapter (`src/agy.ts`) adds:
+
+- It drops the bridge's `--gemini-dir`, a host folder linked to the host's own agy login. `agy` uses the role's home
+  in the VM instead.
+- When the bridge hands `agy` its MCP server (pi's tools) in `session/new`, it opens that host port in the VM first.
+
+The image carries a pinned `agy` build, checked by sha512. It can't update itself in the VM, so bump `AGY_BUILD` in the
+Containerfile to update it.
+
+The bridge's artifact list and background-task watcher read the host's `~/.gemini`, so they show nothing for VM runs.
+
 ## Checks
 
 `npm test` (unit + one VM test) and `npm run spike` (the full M1 check list, prints PASS/FAIL; `PUSH_REPO=owner/repo`
