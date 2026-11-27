@@ -1,7 +1,7 @@
 # pi-local-sandbox: the Gondolin VM's root filesystem on the Mac (tools only; pi runs on the host).
 FROM registry.fedoraproject.org/fedora-minimal:45
 ARG MISE_VERSION=v2026.10.25
-# agy (Antigravity CLI) for roles with a google-oauth secret: pinned build from Google's release manifest
+# agy (Antigravity CLI, see "Recipe: Antigravity" in the README): pinned build from Google's release manifest
 # (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_<arch>.json).
 # It can't update itself in the VM (no egress to the updater); bump these to update.
 ARG AGY_BUILD=1.5.18-6386224290725888

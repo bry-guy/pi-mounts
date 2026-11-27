@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,7 +9,7 @@ process.env.HOME = mkdtempSync(join(tmpdir(), "pimounts-home-"));
 process.env.PI_CODING_AGENT_DIR = join(process.env.HOME, "agent");
 const { default: extension } = await import("../src/extension.ts");
 
-test("a role with a google-oauth secret: login resolved apart from other secrets, agy relay up and torn down", async () => {
+test("a sandboxed role: oauth2 login resolved apart from other secrets, exec relay up and torn down", async () => {
 	const handlers: Record<string, Function[]> = {};
 	const commands: Record<string, any> = {};
 	const notes: string[] = [];
@@ -27,7 +27,7 @@ test("a role with a google-oauth secret: login resolved apart from other secrets
 		},
 		storeSecret: () => {},
 	};
-	const role = { secrets: { GH_TOKEN: { hosts: ["github.com"] }, AGY: { kind: "google-oauth", hosts: ["cloudcode-pa.googleapis.com"] } } };
+	const role = { secrets: { GH_TOKEN: { hosts: ["github.com"] }, AGY: { kind: "oauth2", tokenUrl: "https://oauth2.googleapis.com/token", placeholderPrefix: { access: "ya29." }, hosts: ["cloudcode-pa.googleapis.com"] }, BAD: { kind: "oauth2", hosts: [] } } };
 	(globalThis as any)[Symbol.for("pi-projects.v1")] = {
 		projectForCwd: () => ({ path: process.env.HOME, name: "p" }),
 		sessionRole: () => ({ roleId: "app/agy-dev", role }),
@@ -40,11 +40,13 @@ test("a role with a google-oauth secret: login resolved apart from other secrets
 
 	assert.deepEqual(resolved, [["AGY"], ["GH_TOKEN"]]);
 	assert.equal(process.env.PI_MOUNTS_SANDBOXED, "1");
-	assert.ok(process.env.PI_MOUNTS_AGY_SOCKET && existsSync(process.env.PI_MOUNTS_AGY_SOCKET));
-	assert.ok(existsSync(join(process.env.HOME!, ".cache", "pi-mounts", "agy", "app--agy-dev.json")));
-	await commands["agy-login"].handler("", ctx);
-	assert.match(notes.at(-1)!, /PI_MOUNTS_AGY_SOCKET=\S+ \S+agy-vm\.mjs/);
+	assert.ok(notes.some((n) => /BAD has no tokenUrl/.test(n)));
+	assert.ok(process.env.PI_MOUNTS_EXEC_SOCKET && existsSync(process.env.PI_MOUNTS_EXEC_SOCKET));
+	const ph = JSON.parse(readFileSync(join(process.env.HOME!, ".cache", "pi-mounts", "oauth", "app--agy-dev", "AGY.json"), "utf8"));
+	assert.match(ph.access, /^ya29\.pimounts-/);
+	await commands["vm-exec"].handler("agy", ctx);
+	assert.match(notes.at(-1)!, /PI_MOUNTS_EXEC_SOCKET=\S+ \S+vm-exec\.mjs agy$/);
 
 	for (const f of handlers.session_shutdown) await f({}, ctx);
-	assert.equal(process.env.PI_MOUNTS_AGY_SOCKET, undefined);
+	assert.equal(process.env.PI_MOUNTS_EXEC_SOCKET, undefined);
 });
