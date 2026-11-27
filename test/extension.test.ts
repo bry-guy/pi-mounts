@@ -42,6 +42,7 @@ test("a sandboxed role: oauth2 login resolved apart from other secrets, exec rel
 	assert.equal(process.env.PI_MOUNTS_SANDBOXED, "1");
 	assert.ok(notes.some((n) => /BAD has no tokenUrl/.test(n)));
 	assert.ok(process.env.PI_MOUNTS_EXEC_SOCKET && existsSync(process.env.PI_MOUNTS_EXEC_SOCKET));
+	assert.match(process.env.AGY_BIN ?? "", /bin\/agy-vm\.mjs$/);
 	const ph = JSON.parse(readFileSync(join(process.env.HOME!, ".cache", "pi-mounts", "oauth", "app--agy-dev", "AGY.json"), "utf8"));
 	assert.match(ph.access, /^ya29\.pimounts-/);
 	await commands["vm-exec"].handler("agy", ctx);
