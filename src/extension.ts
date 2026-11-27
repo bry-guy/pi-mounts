@@ -24,6 +24,7 @@ import { type SignInScript, type SignInUi, signIn } from "./sign-in.ts";
 import { acquire, CACHE, type Config, hostGitIdentity, loadConfig, type Policy, roleKey } from "./vm.ts";
 
 const VM_EXEC = fileURLToPath(new URL("../bin/vm-exec.mjs", import.meta.url));
+const AGY_VM = fileURLToPath(new URL("../bin/agy-vm.mjs", import.meta.url));
 
 // One exec relay per pi process (its socket travels in process.env, which is process-wide). Sessions of one process
 // share the VM of their project and role (subagent children included), so it serves the latest sandboxed session's VM.
@@ -138,6 +139,13 @@ async function guestExec(vm: any, command: string, cwd: string, opts: { onData?:
 }
 
 export default function (pi: ExtensionAPI) {
+	// The antigravity bridge starts `$AGY_BIN` (default `agy`), read when it loads. Point it at bin/agy-vm, which runs agy
+	// in the session's VM when sandboxed and the host's agy otherwise. Needs pi-mounts listed before the bridge.
+	if (!process.env.AGY_BIN) {
+		process.env.AGY_BIN = AGY_VM;
+		if ((globalThis as any)[Symbol.for("pi-antigravity-bridge:active")])
+			console.warn("pi-mounts: the antigravity bridge loaded first, so agy runs on the host; list pi-mounts before it in settings.json packages");
+	}
 	const cfg: Config = loadConfig();
 	let sb: Sandbox = { allowed: new Set() };
 	const self = Symbol("pi-mounts session");

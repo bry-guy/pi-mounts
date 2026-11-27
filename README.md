@@ -151,8 +151,10 @@ CLI. The three features above run it in the role's VM with the Google login kept
 "hostPorts": []
 ```
 
-1. Start pi with `AGY_BIN=<pi-mounts>/bin/agy-vm.mjs` and `AGY_APPROVALS=off`. The bridge's approval gate would
-   replace pi-mounts' VM `bash`/`edit`/`write` with host ones.
+1. List pi-mounts before the bridge in `packages`: pi-mounts then sets `AGY_BIN` to `bin/agy-vm.mjs` (unless you set
+   it), which runs agy in the VM in sandboxed sessions and the host's agy otherwise. Turn the bridge's approval gate
+   off (`"approvals": { "gateMode": "off" }` in `~/.pi/agent/antigravity-bridge/config.json`): it would replace
+   pi-mounts' VM `bash`/`edit`/`write` with host ones.
 2. Pick a Gemini model and chat. The first turn asks you to sign in: open the URL it shows, then paste the code
    into the prompt. To sign in again later, run `/vm-login agy`.
 
