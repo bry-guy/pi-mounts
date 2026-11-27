@@ -82,7 +82,8 @@ placeholders. This works for logins that expire and refresh through a standard O
     "kind": "oauth2",
     "tokenUrl": "https://oauth2.googleapis.com/token",
     "hosts": ["cloudcode-pa.googleapis.com"],
-    "placeholderPrefix": { "access": "ya29.", "refresh": "1//" }
+    "placeholderPrefix": { "access": "ya29.", "refresh": "1//" },
+    "signIn": "agy"
   }
 }
 ```
@@ -97,8 +98,10 @@ placeholders. This works for logins that expire and refresh through a standard O
 - **Access tokens.** Gondolin swaps the access placeholder into request headers for the secret's `hosts` only.
 - **Placeholders** are kept in `~/.cache/pi-mounts/oauth/<role>/<name>.json`. `placeholderPrefix` makes them look like
   the provider's tokens, for CLIs that check the shape.
-- **Signing in.** Run the CLI's own login in the VM with `/vm-exec <cli> ...` (below); its code exchange goes through
-  the same handler.
+- **Signing in.** With `"signIn": "<cli>"`, pi-mounts signs the CLI in through pi's own UI (terminal or pi-web). On the
+  CLI's first run that needs the login, or on `/vm-login <cli>`, it runs the CLI's sign-in screen in a pty in the VM,
+  shows you the sign-in URL and asks for the code. The code exchange goes through the handler above. Known CLIs: `agy`
+  (`SIGN_IN` in `src/extension.ts`). Other CLIs can sign in by hand with `/vm-exec <cli> ...` (below).
 - **Limits.**
   - Code in the VM can use the access placeholder against the listed hosts while the VM runs, but can't take the token
     out.
@@ -141,7 +144,8 @@ CLI. The three features above run it in the role's VM with the Google login kept
 
 ```json
 "secrets": { "GOOGLE": { "kind": "oauth2", "tokenUrl": "https://oauth2.googleapis.com/token",
-                         "hosts": ["cloudcode-pa.googleapis.com"], "placeholderPrefix": { "access": "ya29.", "refresh": "1//" } } },
+                         "hosts": ["cloudcode-pa.googleapis.com"], "placeholderPrefix": { "access": "ya29.", "refresh": "1//" },
+                         "signIn": "agy" } },
 "egress": ["oauth2.googleapis.com", "cloudcode-pa.googleapis.com", "www.googleapis.com"],
 "egressPaths": { "www.googleapis.com": ["/oauth2/"] },
 "hostPorts": []
@@ -149,7 +153,8 @@ CLI. The three features above run it in the role's VM with the Google login kept
 
 1. Start pi with `AGY_BIN=<pi-mounts>/bin/agy-vm.mjs` and `AGY_APPROVALS=off`. The bridge's approval gate would
    replace pi-mounts' VM `bash`/`edit`/`write` with host ones.
-2. Sign in once with `/vm-exec agy` and pick Google sign-in.
+2. Pick a Gemini model and chat. The first turn asks you to sign in: open the URL it shows, then paste the code
+   into the prompt. To sign in again later, run `/vm-login agy`.
 
 What the `agy` adapter (`src/agy.ts`) adds:
 

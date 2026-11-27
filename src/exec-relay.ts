@@ -15,6 +15,8 @@ export interface Adapter {
 	args?: (argv: string[]) => string[];
 	/** Sees each stdin line (non-pty only) before the command gets it; the line waits for the returned promise. */
 	onLine?: (line: string, vm: any) => Promise<void> | void;
+	/** Runs before the command starts (e.g. signs it in); a rejection fails the run with its message */
+	before?: (argv: string[]) => Promise<void> | void;
 }
 
 export async function startExecRelay(getVm: () => Promise<any>, adapters: Record<string, Adapter> = {}): Promise<{ path: string; close: () => void }> {
@@ -75,6 +77,7 @@ function serve(sock: net.Socket, getVm: () => Promise<any>, adapters: Record<str
 		pty = !!hello.pty;
 		adapter = adapters[basename(hello.cmd)] ?? {};
 		const argv = adapter.args ? adapter.args(hello.argv ?? []) : (hello.argv ?? []);
+		await adapter.before?.(argv);
 		// sh's exec looks the command up on the guest PATH.
 		const launch = ["/bin/sh", "-c", `echo $$ > ${pidFile}; exec "$0" "$@"`, hello.cmd, ...argv];
 		proc = vm.exec(pty ? launch : ["/usr/bin/setsid", "-w", ...launch], { cwd: hello.cwd, stdin: true, stdout: "pipe", stderr: "pipe", ...(pty ? { pty: true } : {}) });

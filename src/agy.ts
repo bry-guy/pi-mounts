@@ -3,6 +3,17 @@
 // MCP server) and src/oauth.ts (the Google login stays on the host).
 import { openHostPort } from "./host-ports.ts";
 import type { Adapter } from "./exec-relay.ts";
+import type { SignInScript } from "./sign-in.ts";
+
+/** agy's first-run screen: a login menu (Enter picks Google OAuth), then the URL and a code prompt. */
+export const agySignIn: SignInScript = {
+	command: ["agy"],
+	steps: [{ expect: /Select login method/, send: "\r" }],
+	url: /https:\/\/accounts\.google\.com\/\S+/,
+};
+
+/** Runs that talk to Google (not --version/--help probes, nor a bare `agy`, which is its own sign-in screen). */
+export const agyNeedsSignIn = (argv: string[]) => argv.length > 0 && !argv.some((a) => /^-{1,2}(version|help|h|v)$/.test(a));
 
 /** The bridge's --gemini-dir is a host folder linked to the host's own agy login: agy uses the role's home instead. */
 export function guestArgs(argv: string[]): string[] {
